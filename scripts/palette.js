@@ -32,7 +32,7 @@ const TOOL_INFO = {
   },
   pick: {
     title: "Select", icon: "fa-solid fa-arrow-pointer",
-    hint: "Click a path, wall, opening, tile or light (yellow dots) to select it. Drag tiles and lights to move them; Delete removes; Ctrl+Z undoes."
+    hint: "Click a path, wall, opening, tile or light (yellow dots) to select it. Drag tiles and lights to move them; paths can be mirrored and roughened; Delete removes; Ctrl+Z undoes."
   }
 };
 
@@ -47,6 +47,7 @@ const OPTIONS = {
   path: [
     ["path.width", "Thickness", "range", { min: 0.25, max: 4, step: 0.05 }],
     ["path.smooth", "Smooth curve", "checkbox"],
+    ["path.rough", "Roughness", "range", { min: 0, max: 1, step: 0.05 }],
     ["path.flip", "Flip side", "checkbox"],
     ["path.snap", "Snap to grid", "checkbox"]
   ],
@@ -164,6 +165,15 @@ export class BattlemapPalette extends foundry.applications.api.ApplicationV2 {
     root.querySelector(".bme-options")?.addEventListener("input", ev => this.#onOption(ev));
     root.querySelector(".bme-options")?.addEventListener("change", ev => this.#onOption(ev));
     root.querySelectorAll("[data-action-bme]").forEach(b => b.addEventListener("click", ev => this.#onAction(ev)));
+    for (const input of root.querySelectorAll(".bme-pathedit input[type=range]")) {
+      const send = final => {
+        const v = Number(input.value);
+        input.parentElement.querySelector("output").textContent = v;
+        this.layer.editPath(input.name, v, { final });
+      };
+      input.addEventListener("input", () => send(false));
+      input.addEventListener("change", () => send(true));
+    }
     if (TOOL_KINDS[this.tool]?.length) await this.#initBrowser();
   }
 
@@ -225,6 +235,21 @@ export class BattlemapPalette extends foundry.applications.api.ApplicationV2 {
             ${btn("delete", "fa-trash", "Delete")}
           </div>
           <p class="hint">Drag to move${isTile ? " (Shift toggles snapping, linked lights follow). Shift+wheel rotates, Ctrl+wheel scales" : " (Shift snaps)"}. Double-click opens the full settings.</p>`;
+      } else if (this.layer.selectedPath) {
+        const p = this.layer.selectedPath;
+        const pb = (action, icon, label, tip) => `<button type="button" data-action-bme="path-${action}" data-tooltip="${tip}"><i class="fa-solid ${icon}"></i> ${label}</button>`;
+        const range = (name, label, v, min, max, step) => `<div class="form-group bme-opt"><label>${label}</label><div class="form-fields">
+            <input type="range" name="${name}" value="${v}" min="${min}" max="${max}" step="${step}"><output>${v}</output></div></div>`;
+        selHTML = `<div class="bme-row"><strong>Path:</strong> ${nameOf(p.src)}</div>
+          <div class="bme-row bme-buttons">
+            ${pb("mirror", "fa-left-right", "Mirror", "Put the art on the other side of the line")}
+            ${pb("reseed", "fa-dice", "New noise", "Roll a different rough edge")}
+            <button type="button" data-action-bme="delete"><i class="fa-solid fa-trash"></i> Delete</button>
+          </div>
+          <div class="bme-pathedit">
+            ${range("rough", "Roughness", p.rough ?? 0, 0, 1, 0.05)}
+            ${range("width", "Thickness", p.width ?? 1, 0.25, 4, 0.05)}
+          </div>`;
       } else if (sel) {
         const label = sel.type === "opening" ? `${sel.opening.kind} on a wall` : sel.type;
         const art = sel.type === "opening" ? sel.opening.src : sel.entry.src;
@@ -284,6 +309,8 @@ export class BattlemapPalette extends foundry.applications.api.ApplicationV2 {
       case "layer-remove": return this.layer.removeLayer(id);
       case "delete": return this.layer.deleteSelected();
       case "unflatten": return this.layer.unflatten();
+      case "path-mirror": return this.layer.editPath("mirror");
+      case "path-reseed": return this.layer.editPath("reseed");
       case "doc-configure": case "doc-mirror": case "doc-front": case "doc-back": case "doc-hide": case "doc-delete":
         return this.layer.editSelected(a.dataset.actionBme.slice(4));
       case "clear-selection":

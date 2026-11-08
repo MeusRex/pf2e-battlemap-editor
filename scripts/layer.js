@@ -2,7 +2,7 @@ import { LAYER_NAME, MAX_TERRAIN_LAYERS, MODULE_ID } from "./constants.js";
 import { EditorCatalog } from "./catalog.js";
 import { MapStore } from "./store.js";
 import { MapRenderer, artScale } from "./renderer.js";
-import { cumulative, dist, project, ringPoints, smooth } from "./geometry.js";
+import { cumulative, dist, pathPoints, project, ringPoints } from "./geometry.js";
 import { removeWalls, syncWalls } from "./walls.js";
 import { footprint, placeObjects, snapCenter } from "./objects.js";
 import { BattlemapPalette } from "./palette.js";
@@ -13,7 +13,7 @@ import { openNewMapDialog } from "./newmap.js";
 export const DEFAULT_SETTINGS = {
   selection: { terrain: [], path: [], wall: [], door: [], object: [], scatter: [] },
   brush: { size: 3, hardness: 0.4, opacity: 0.8, erase: false },
-  path: { width: 1, smooth: true, flip: false, snap: false },
+  path: { width: 1, smooth: true, flip: false, snap: false, rough: 0 },
   wall: { type: "normal", width: 1, snap: true },
   door: { width: 1, secret: false },
   object: { rotation: 0, scale: 1, randomRotation: false, randomMirror: false, scaleJitter: 0, snap: false, autoLight: true },
@@ -595,7 +595,7 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
   #drawPathOutlines(g, color, alpha) {
     const o = this.origin;
     for (const p of this.store?.data.paths ?? []) {
-      const pts = ringPoints(p.smooth ? smooth(p.points, p.closed) : p.points, p.closed && !p.smooth);
+      const pts = pathPoints(p, this.G);
       if (pts.length < 2) continue;
       g.lineStyle(2, color, alpha).moveTo(pts[0][0] + o.x, pts[0][1] + o.y);
       for (const q of pts.slice(1)) g.lineTo(q[0] + o.x, q[1] + o.y);
@@ -618,8 +618,7 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
       return;
     }
     const e = hit.entry;
-    const raw = hit.type === "path" && e.smooth ? smooth(e.points, e.closed) : e.points;
-    const pts = ringPoints(raw, e.closed && !(hit.type === "path" && e.smooth));
+    const pts = hit.type === "path" ? pathPoints(e, this.G) : ringPoints(e.points, e.closed);
     g.lineStyle(6, color, alpha).moveTo(pts[0][0] + o.x, pts[0][1] + o.y);
     for (const q of pts.slice(1)) g.lineTo(q[0] + o.x, q[1] + o.y);
   }
@@ -865,7 +864,8 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
       const src = this.selection("path")[0]?.src;
       if (!src) return ui.notifications.warn("Battlemap Editor: pick a path texture in the palette first.");
       const s = this.settings.path;
-      const entry = { id: foundry.utils.randomID(8), src, points: draft.points, closed, smooth: s.smooth, flip: s.flip, width: s.width };
+      const entry = { id: foundry.utils.randomID(8), src, points: draft.points, closed, smooth: s.smooth, flip: s.flip, width: s.width,
+        rough: s.rough ?? 0, seed: Math.floor(Math.random() * 2 ** 31) };
       d.paths.push(entry);
       store.touch();
       await this.renderer.buildVectors();
@@ -1133,8 +1133,7 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
       else consider({ type: "wall", entry: wall }, h.dist);
     }
     for (const path of d.paths) {
-      const raw = path.smooth ? smooth(path.points, path.closed) : path.points;
-      const pts = ringPoints(raw, path.closed && !path.smooth);
+      const pts = pathPoints(path, G);
       if (pts.length < 2) continue;
       const h = project(pts, cumulative(pts), q);
       const tol = Math.max(G * 0.3, (this.catalog?.get(path.src)?.h ?? 128) * artScale(G) * (path.width ?? 1) * 0.5);
@@ -1323,6 +1322,49 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     });
     this.palette.render();
     this.#updateCursor(canvas.mousePosition);
+  }
+
+  /** The editor path selected with the Select tool, if it still exists. */
+  get selectedPath() {
+    const sel = this.selected;
+    return sel?.type === "path" && this.store?.data.paths.includes(sel.entry) ? sel.entry : null;
+  }
+
+  #pathEdit = null;
+
+  /**
+   * Palette actions on the selected path.
+   * "mirror" flips the art to the other side, "reseed" rolls new noise, "rough" sets the roughness live:
+   * slider moves preview immediately and become one undo step when the slider is released (final = true).
+   */
+  async editPath(action, value, { final = true } = {}) {
+    const entry = this.selectedPath;
+    if (!entry) return;
+    const store = this.store;
+    const keys = { mirror: "flip", reseed: "seed", rough: "rough", width: "width" };
+    const key = keys[action];
+    if (!key) return;
+    if (!this.#pathEdit || this.#pathEdit.entry !== entry || this.#pathEdit.key !== key) {
+      this.#pathEdit = { entry, key, before: entry[key] };
+    }
+    if (action === "mirror") entry.flip = !entry.flip;
+    else if (action === "reseed") entry.seed = Math.floor(Math.random() * 2 ** 31);
+    else entry[key] = value;
+    await this.renderer?.buildVectors();
+    this.#updateCursor(canvas.mousePosition);
+    if (!final) return;
+    const { before } = this.#pathEdit;
+    this.#pathEdit = null;
+    const after = entry[key];
+    if (before === after) return;
+    store.touch();
+    this.pushUndo(action === "mirror" ? "mirror path" : `path ${key}`, async () => {
+      entry[key] = before;
+      store.touch();
+      await this.renderer?.buildVectors();
+      if (this.selectedPath === entry) this.palette.render();
+    });
+    if (action !== "rough" && action !== "width") this.palette.render();
   }
 
   async #deleteDoc(doc) {

@@ -1,5 +1,5 @@
 import { MODULE_ID } from "./constants.js";
-import { cumulative, pointAt, ringPoints, smooth, splitByRanges } from "./geometry.js";
+import { cumulative, pathPoints, pointAt, ringPoints, smooth, splitByRanges } from "./geometry.js";
 import { makeRope } from "./rope.js";
 
 /** Texture px -> scene px for Dungeondraft art (authored at 256 px per square). */
@@ -299,7 +299,7 @@ export class MapRenderer {
     for (const p of d.paths) {
       const t = textures.get(p.src);
       if (!t || p.points.length < 2) continue;
-      const pts = p.smooth ? smooth(p.points, p.closed) : p.points;
+      const pts = pathPoints(p, G);
       const mesh = makeRope(t, pts, { scale: scale * (p.width ?? 1), closed: p.closed, flip: p.flip });
       if (mesh) this.paths.addChild(mesh);
     }

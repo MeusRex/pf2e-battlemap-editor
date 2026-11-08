@@ -94,6 +94,101 @@ export function smooth(points, closed, steps = 6) {
   return out;
 }
 
+/** Small deterministic PRNG (mulberry32), so a path looks the same on every render and in the bake. */
+function rng(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Stable integer from a string (path id), used when an entry has no seed yet. */
+export function hashSeed(str = "") {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) h = Math.imul(h ^ str.charCodeAt(i), 16777619);
+  return h >>> 0;
+}
+
+/**
+ * Displace a polyline sideways with fractal value noise, for rough cliff edges and wobbly roads.
+ * The noise runs along the line's length, so it doesn't depend on how many points were clicked. Closed rings
+ * wrap seamlessly; open lines keep their end points where they were clicked.
+ * @param {number[][]} pts   polyline (closed rings repeat the first point at the end)
+ * @param {boolean} closed
+ * @param {object} o
+ * @param {number} o.amplitude  max sideways offset in px
+ * @param {number} o.wavelength length of the largest bumps in px
+ * @param {number} o.seed
+ * @returns {number[][]}
+ */
+export function roughen(pts, closed, { amplitude, wavelength, seed }) {
+  const cum = cumulative(pts);
+  const total = cum[cum.length - 1];
+  if (!(amplitude > 0) || total < 1) return pts;
+  const step = Math.max(2, wavelength / 24);
+  const count = Math.max(2, Math.ceil(total / step));
+  const ring = closed && pts.length > 3;
+
+  // Octaves of value noise with their own lattices; ring lattices have a whole number of cells so they wrap.
+  const rand = rng(seed);
+  const octaves = [1, 0.55, 0.35, 0.2].map((amp, k) => {
+    const wl = wavelength / 2 ** k;
+    const cells = Math.max(1, Math.round(total / wl));
+    const values = Array.from({ length: cells + 1 }, () => rand() * 2 - 1);
+    if (ring) values[cells] = values[0];
+    return { amp, cells, values };
+  });
+  const norm = octaves.reduce((s, o) => s + o.amp, 0);
+  const noise = d => {
+    let v = 0;
+    for (const o of octaves) {
+      const x = (d / total) * o.cells;
+      const i = Math.min(o.cells - 1, Math.floor(x));
+      const t = x - i, s = t * t * (3 - 2 * t);
+      v += o.amp * (o.values[i] + (o.values[i + 1] - o.values[i]) * s);
+    }
+    return v / norm;
+  };
+
+  const samples = [];
+  for (let i = 0; i <= count; i++) samples.push(pointAt(pts, cum, (i / count) * total));
+  const taper = Math.min(wavelength * 0.5, total / 4);
+  const out = samples.map((p, i) => {
+    const prev = samples[i > 0 ? i - 1 : (ring ? count - 1 : 0)];
+    const next = samples[i < count ? i + 1 : (ring ? 1 : count)];
+    const dx = next[0] - prev[0], dy = next[1] - prev[1], l = Math.hypot(dx, dy) || 1;
+    const d = (i / count) * total;
+    let k = 1;
+    if (!ring) {
+      const e = Math.min(d, total - d) / (taper || 1);
+      k = e >= 1 ? 1 : e * e * (3 - 2 * e);
+    }
+    const off = noise(d) * amplitude * k;
+    return [p[0] - (dy / l) * off, p[1] + (dx / l) * off];
+  });
+  if (ring) out[count] = out[0].slice();
+  return out;
+}
+
+/**
+ * The polyline an editor path is drawn along: smoothed if set, closed as a ring if closed, roughened if set.
+ * Renderer, hit testing and outlines all use this so they agree.
+ * @param {{points: number[][], closed: boolean, smooth?: boolean, rough?: number, seed?: number, id?: string}} p
+ * @param {number} G  grid size in px; roughness scales with it
+ */
+export function pathPoints(p, G) {
+  const raw = p.smooth ? smooth(p.points, p.closed) : p.points;
+  let pts = ringPoints(raw, p.closed && !(p.smooth && p.points.length >= 3));
+  if (p.rough > 0 && pts.length >= 2) {
+    pts = roughen(pts, p.closed, { amplitude: p.rough * G * 0.6, wavelength: G * 2.5, seed: p.seed ?? hashSeed(p.id) });
+  }
+  return pts;
+}
+
 /** Distance from p to segment ab. */
 export function segmentDistance(p, a, b) {
   const dx = b[0] - a[0], dy = b[1] - a[1];
