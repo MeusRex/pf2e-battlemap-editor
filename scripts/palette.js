@@ -1,5 +1,6 @@
 import { TOOL_KINDS, WALL_TYPES } from "./constants.js";
 import { EditorCatalog } from "./catalog.js";
+import { describe } from "./placeables.js";
 
 const CELL = 76;
 const esc = s => foundry.utils.escapeHTML(String(s ?? ""));
@@ -31,7 +32,7 @@ const TOOL_INFO = {
   },
   pick: {
     title: "Select", icon: "fa-solid fa-arrow-pointer",
-    hint: "Click a path, wall or opening to select it; Delete removes it. Ctrl+Z undoes. Tiles and lights are edited with Foundry's own Tile and Lighting tools."
+    hint: "Click a path, wall, opening, tile or light (yellow dots) to select it. Drag tiles and lights to move them; Delete removes; Ctrl+Z undoes."
   }
 };
 
@@ -208,7 +209,19 @@ export class BattlemapPalette extends foundry.applications.api.ApplicationV2 {
       const sel = this.layer.selected;
       const d = store.data;
       let selHTML = `<p class="hint">Nothing selected.</p>`;
-      if (sel) {
+      const doc = this.layer.selectedDoc;
+      if (doc) {
+        const isTile = doc.documentName === "Tile";
+        const btn = (action, icon, label) => `<button type="button" data-action-bme="doc-${action}"><i class="fa-solid ${icon}"></i> ${label}</button>`;
+        selHTML = `<div class="bme-row"><strong>${isTile ? "Tile" : "Light"}:</strong> ${esc(describe(doc))}${doc.hidden ? " <em>(hidden)</em>" : ""}</div>
+          <div class="bme-row bme-buttons">
+            ${btn("configure", "fa-gear", "Configure")}
+            ${isTile ? btn("mirror", "fa-left-right", "Mirror") + btn("front", "fa-arrow-up-wide-short", "To front") + btn("back", "fa-arrow-down-short-wide", "To back") : ""}
+            ${btn("hide", doc.hidden ? "fa-eye" : "fa-eye-slash", doc.hidden ? "Show" : "Hide")}
+            ${btn("delete", "fa-trash", "Delete")}
+          </div>
+          <p class="hint">Drag to move${isTile ? " (Shift toggles snapping, linked lights follow). Shift+wheel rotates, Ctrl+wheel scales" : " (Shift snaps)"}. Double-click opens the full settings.</p>`;
+      } else if (sel) {
         const label = sel.type === "opening" ? `${sel.opening.kind} on a wall` : sel.type;
         const art = sel.type === "opening" ? sel.opening.src : sel.entry.src;
         selHTML = `<div class="bme-row"><strong>Selected:</strong> ${esc(label)} ${art ? `(${nameOf(art)})` : ""}
@@ -267,6 +280,8 @@ export class BattlemapPalette extends foundry.applications.api.ApplicationV2 {
       case "layer-remove": return this.layer.removeLayer(id);
       case "delete": return this.layer.deleteSelected();
       case "unflatten": return this.layer.unflatten();
+      case "doc-configure": case "doc-mirror": case "doc-front": case "doc-back": case "doc-hide": case "doc-delete":
+        return this.layer.editSelected(a.dataset.actionBme.slice(4));
       case "clear-selection":
         this.layer.setSelection(this.tool, []);
         return this.#renderSelected();

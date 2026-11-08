@@ -7,6 +7,7 @@ import { removeWalls, syncWalls } from "./walls.js";
 import { footprint, placeObjects, snapCenter } from "./objects.js";
 import { BattlemapPalette } from "./palette.js";
 import { bakeMap, currentUnderlay } from "./bake.js";
+import { isAlive, lightAt, lightsOnLevel, linkedLights, tileAt, tileCorners } from "./placeables.js";
 import { openNewMapDialog } from "./newmap.js";
 
 export const DEFAULT_SETTINGS = {
@@ -51,6 +52,8 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
   #draft = null;          // polyline being drawn: {tool, points}
   #stroke = null;         // terrain stroke in progress
   #scatter = null;        // scatter stroke in progress
+  #move = null;           // tile or light being dragged with the Select tool
+  #wheelUndo = null;      // coalesces wheel rotate/scale into one undo step
   #roll = null;           // pre-rolled randomness for the next placed object
   #ghostSrc = null;
   #brushCache = new Map();
@@ -85,7 +88,7 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
         door: t("door", 4, "Place doors and windows on editor walls", "fa-solid fa-door-open"),
         object: t("object", 5, "Place objects (Shift+wheel: rotate, Ctrl+wheel: scale)", "fa-solid fa-chess-rook"),
         scatter: t("scatter", 6, "Scatter brush: drag to sprinkle the selected objects", "fa-solid fa-seedling"),
-        pick: t("pick", 7, "Select and delete paths, walls and openings", "fa-solid fa-arrow-pointer"),
+        pick: t("pick", 7, "Select: paths, walls, openings, tiles and lights (drag to move, double-click to configure)", "fa-solid fa-arrow-pointer"),
         palette: t("palette", 8, "Show the asset palette", "fa-solid fa-swatchbook", {
           button: true, onChange: () => layer()?.palette.render({ force: true })
         }),
@@ -353,9 +356,19 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     }
   }
 
+  /** The tile or light selected with the Select tool, if it still exists. */
+  get selectedDoc() {
+    const sel = this.selected;
+    if (!sel?.doc) return null;
+    if (isAlive(sel.doc)) return sel.doc;
+    this.selected = null;
+    return null;
+  }
+
   /** @override */
   _onClickLeft2(event) {
     if (POLY_TOOLS.has(this.tool) && this.#draft) this.#finishDraft();
+    else if (this.tool === "pick") this.selectedDoc?.sheet?.render({ force: true });
   }
 
   /** @override */
@@ -369,6 +382,12 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
 
   /** @override */
   _canDragLeftStart(user, event) {
+    if (this.tool === "pick") {
+      const doc = this.selectedDoc;
+      if (!doc) return false;
+      const origin = event.interactionData?.origin ?? canvas.mousePosition;
+      return this.#hitTest(origin)?.doc === doc;
+    }
     return this.tool === "terrain" || this.tool === "scatter";
   }
 
@@ -379,6 +398,8 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     } else if (this.tool === "scatter") {
       if (!this.#scatter) this.#beginScatter();
       this.#scatterAt(canvas.mousePosition);
+    } else if (this.tool === "pick") {
+      this.#beginMove(event);
     }
   }
 
@@ -401,6 +422,7 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     const pos = canvas.mousePosition;
     if (this.#stroke) this.#strokeTo(pos);
     else if (this.#scatter) this.#scatterAt(pos);
+    else if (this.#move) this.#moveTo(pos, event);
     this.#updateCursor(pos);
   }
 
@@ -408,12 +430,14 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
   _onDragLeftDrop(event) {
     if (this.#stroke) this.#endStroke();
     if (this.#scatter) this.#endScatter();
+    if (this.#move) this.#endMove(true);
   }
 
   /** @override */
   _onDragLeftCancel(event) {
     if (this.#stroke) this.#endStroke();
     if (this.#scatter) this.#endScatter();
+    if (this.#move) this.#endMove(false);
   }
 
   /** @override */
@@ -421,6 +445,12 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     const up = event.delta < 0;
     const shift = event.shiftKey;
     const s = this.settings;
+    if (this.tool === "pick") {
+      if (this.selectedDoc?.documentName !== "Tile") return;
+      if (shift) this.#transformSelected({ rotate: up ? 15 : -15 });
+      else this.#transformSelected({ scale: up ? 1.1 : 1 / 1.1 });
+      return;
+    }
     if (this.tool === "object") {
       if (shift) s.object.rotation = (s.object.rotation + (up ? 15 : -15) + 360) % 360;
       else s.object.scale = Math.round(Math.min(8, Math.max(0.1, s.object.scale * (up ? 1.1 : 1 / 1.1))) * 100) / 100;
@@ -507,6 +537,13 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
       case "pick": {
         this.#drawWallOutlines(g, 0x66aaff, 0.3);
         this.#drawPathOutlines(g, 0xffffff, 0.2);
+        g.lineStyle(1, 0x000000, 0.6);
+        for (const l of lightsOnLevel()) g.beginFill(0xffd25a, 0.55).drawCircle(l.x, l.y, G * 0.12).endFill();
+        if (this.#move) {
+          this.#drawMove(g, accent);
+          break;
+        }
+        this.selectedDoc;  // drops a selection whose document was deleted elsewhere
         const hover = this.#hitTest(pos);
         if (hover) this.#drawHit(g, hover, 0xffffff, 0.6);
         if (this.selected) this.#drawHit(g, this.selected, accent, 1);
@@ -537,6 +574,14 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
 
   #drawHit(g, hit, color, alpha) {
     const o = this.origin;
+    if (hit.type === "tile") {
+      g.lineStyle(3, color, alpha).drawPolygon(tileCorners(hit.doc).flat());
+      return;
+    }
+    if (hit.type === "light") {
+      g.lineStyle(3, color, alpha).drawCircle(hit.doc.x, hit.doc.y, this.G * 0.22);
+      return;
+    }
     if (hit.type === "opening") {
       const { a, b } = this.#openingEnds(hit.wall, hit.opening);
       g.lineStyle(10, color, alpha).moveTo(a[0] + o.x, a[1] + o.y).lineTo(b[0] + o.x, b[1] + o.y);
@@ -559,6 +604,8 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     }
     const { w, h } = footprint(asset, this.catalog?.ppi);
     const scale = this.settings.object.scale * (roll?.scale ?? 1);
+    ghost.anchor.set(0.5);
+    ghost.scale.set(1);  // the width setter keeps the sign of scale, so reset mirroring first
     ghost.width = w * this.G * scale;
     ghost.height = h * this.G * scale;
     if (roll?.mirror) ghost.scale.x = -Math.abs(ghost.scale.x);
@@ -1064,6 +1111,12 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
       const tol = Math.max(G * 0.3, (this.catalog?.get(path.src)?.h ?? 128) * artScale(G) * (path.width ?? 1) * 0.5);
       if (h.dist <= tol) consider({ type: "path", entry: path }, h.dist + 0.5);
     }
+    // Thin things first: a click right on a wall or opening wins, then lights, then tiles, then the rest.
+    if (best && best.type !== "path" && best.dd < G * 0.15) return best;
+    const light = lightAt(pos, G * 0.3);
+    if (light) return { type: "light", doc: light };
+    const tile = tileAt(pos);
+    if (tile) return { type: "tile", doc: tile };
     return best;
   }
 
@@ -1071,6 +1124,7 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     const sel = this.selected;
     if (!sel || !this.store) return;
     this.selected = null;
+    if (sel.doc) return this.#deleteDoc(sel.doc);
     const store = this.store;
     const d = store.data;
     if (sel.type === "path") {
@@ -1104,6 +1158,155 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     }
     store.touch();
     await this.renderer.buildVectors();
+    this.palette.render();
+    this.#updateCursor(canvas.mousePosition);
+  }
+
+  /* -------------------------------------------- */
+  /*  Tiles & lights                              */
+  /* -------------------------------------------- */
+
+  #beginMove(event) {
+    const doc = this.selectedDoc;
+    if (!doc) return;
+    const origin = event.interactionData?.origin ?? canvas.mousePosition;
+    const isTile = doc.documentName === "Tile";
+    const lights = isTile ? linkedLights(doc).map(l => ({ doc: l, x: l.x, y: l.y })) : [];
+    this.#move = { doc, isTile, origin: { x: origin.x, y: origin.y }, from: { x: doc.x, y: doc.y }, to: { x: doc.x, y: doc.y }, lights };
+    const mesh = isTile ? doc.object?.mesh : null;
+    if (mesh) {
+      this.#move.meshAlpha = mesh.alpha;
+      mesh.alpha = 0.25;
+      const ghost = this.ghost;
+      this.#ghostSrc = null;  // the object tool reloads its own texture
+      ghost.texture = mesh.texture ?? PIXI.Texture.EMPTY;
+      ghost.anchor.set(doc.texture.anchorX ?? 0.5, doc.texture.anchorY ?? 0.5);
+      ghost.scale.set(1);
+      ghost.width = doc.width;
+      ghost.height = doc.height;
+      if ((doc.texture.scaleX ?? 1) < 0) ghost.scale.x = -Math.abs(ghost.scale.x);
+      if ((doc.texture.scaleY ?? 1) < 0) ghost.scale.y = -Math.abs(ghost.scale.y);
+      ghost.angle = doc.rotation ?? 0;
+    }
+  }
+
+  #moveTo(pos, event) {
+    const m = this.#move;
+    let p = { x: m.from.x + pos.x - m.origin.x, y: m.from.y + pos.y - m.origin.y };
+    const shift = event?.shiftKey ?? game.keyboard.isModifierActive("SHIFT");
+    if (m.isTile) {
+      // Same snapping as the object tool: odd footprints centre on a square, even ones on a grid line.
+      const centred = (m.doc.texture.anchorX ?? 0.5) === 0.5 && (m.doc.texture.anchorY ?? 0.5) === 0.5;
+      const wantSnap = this.settings.object.snap ? !shift : shift;
+      if (wantSnap && centred) p = snapCenter(p, { w: m.doc.width, h: m.doc.height }, 1, this.G);
+    } else if (shift) p = this.#snap(p, "any");
+    m.to = { x: Math.round(p.x), y: Math.round(p.y) };
+  }
+
+  #drawMove(g, accent) {
+    const m = this.#move;
+    const G = this.G;
+    const dx = m.to.x - m.from.x, dy = m.to.y - m.from.y;
+    if (m.isTile) {
+      this.ghost.position.set(m.to.x, m.to.y);
+      this.ghost.visible = true;
+      const d = m.doc;
+      const c = tileCorners({ x: m.to.x, y: m.to.y, width: d.width, height: d.height, rotation: d.rotation, texture: d.texture });
+      g.lineStyle(2, accent, 1).drawPolygon(c.flat());
+    } else g.lineStyle(3, accent, 1).drawCircle(m.to.x, m.to.y, G * 0.22);
+    for (const l of m.lights) g.lineStyle(2, 0xffd25a, 1).drawCircle(l.x + dx, l.y + dy, G * 0.22);
+  }
+
+  async #endMove(commit) {
+    const m = this.#move;
+    this.#move = null;
+    this.ghost.visible = false;
+    const mesh = m.isTile ? m.doc.object?.mesh : null;
+    if (mesh && !mesh.destroyed && m.meshAlpha !== undefined) mesh.alpha = m.meshAlpha;
+    const dx = m.to.x - m.from.x, dy = m.to.y - m.from.y;
+    if (!commit || (!dx && !dy) || !isAlive(m.doc)) return this.#updateCursor(canvas.mousePosition);
+    const scene = m.doc.parent;
+    const type = m.doc.documentName;
+    const id = m.doc.id;
+    try {
+      await scene.updateEmbeddedDocuments(type, [{ _id: id, x: m.to.x, y: m.to.y }]);
+      if (m.lights.length) await scene.updateEmbeddedDocuments("AmbientLight", m.lights.map(l => ({ _id: l.doc.id, x: l.x + dx, y: l.y + dy })));
+    } catch (err) {
+      console.error(err);
+      ui.notifications.error(`Battlemap Editor: move failed: ${err.message}`);
+      return;
+    }
+    this.pushUndo(`move ${m.isTile ? "tile" : "light"}`, async () => {
+      if (scene.getEmbeddedDocument(type, id)) await scene.updateEmbeddedDocuments(type, [{ _id: id, x: m.from.x, y: m.from.y }]);
+      const back = m.lights.filter(l => scene.lights.has(l.doc.id)).map(l => ({ _id: l.doc.id, x: l.x, y: l.y }));
+      if (back.length) await scene.updateEmbeddedDocuments("AmbientLight", back);
+    });
+    this.#updateCursor(canvas.mousePosition);
+  }
+
+  /** Rotate or scale the selected tile around its anchor. Wheel ticks within 1.5 s share one undo step. */
+  async #transformSelected({ rotate = 0, scale = 1 }) {
+    const doc = this.selectedDoc;
+    if (doc?.documentName !== "Tile") return;
+    const scene = doc.parent, id = doc.id;
+    const change = { _id: id };
+    if (rotate) change.rotation = (((doc.rotation + rotate) % 360) + 360) % 360;
+    if (scale !== 1) {
+      change.width = Math.max(8, Math.round(doc.width * scale));
+      change.height = Math.max(8, Math.round(doc.height * scale));
+    }
+    const now = Date.now();
+    const w = this.#wheelUndo;
+    if (w && w.id === id && now - w.at < 1500 && this.undoStack.at(-1) === w.entry) w.at = now;
+    else {
+      const before = { rotation: doc.rotation, width: doc.width, height: doc.height };
+      this.pushUndo("rotate/scale tile", async () => {
+        if (scene.tiles.has(id)) await scene.updateEmbeddedDocuments("Tile", [{ _id: id, ...before }]);
+      });
+      this.#wheelUndo = { id, at: now, entry: this.undoStack.at(-1) };
+    }
+    await scene.updateEmbeddedDocuments("Tile", [change]);
+    this.#updateCursor(canvas.mousePosition);
+  }
+
+  /** Palette actions on the selected tile or light. */
+  async editSelected(action) {
+    const doc = this.selectedDoc;
+    if (!doc) return;
+    const scene = doc.parent, id = doc.id, type = doc.documentName;
+    if (action === "configure") return doc.sheet?.render({ force: true });
+    if (action === "delete") return this.deleteSelected();
+    let change, before;
+    if (action === "mirror") {
+      before = { "texture.scaleX": doc.texture.scaleX };
+      change = { "texture.scaleX": -(doc.texture.scaleX ?? 1) };
+    } else if (action === "front" || action === "back") {
+      const sorts = scene.tiles.map(t => t.sort ?? 0);
+      before = { sort: doc.sort };
+      change = { sort: action === "front" ? Math.max(...sorts) + 1 : Math.min(...sorts) - 1 };
+    } else if (action === "hide") {
+      before = { hidden: doc.hidden };
+      change = { hidden: !doc.hidden };
+    } else return;
+    await scene.updateEmbeddedDocuments(type, [{ _id: id, ...change }]);
+    this.pushUndo(`${action} ${type === "Tile" ? "tile" : "light"}`, async () => {
+      if (scene.getEmbeddedDocument(type, id)) await scene.updateEmbeddedDocuments(type, [{ _id: id, ...before }]);
+    });
+    this.palette.render();
+    this.#updateCursor(canvas.mousePosition);
+  }
+
+  async #deleteDoc(doc) {
+    const scene = doc.parent;
+    const type = doc.documentName;
+    const data = doc.toObject();
+    const lights = type === "Tile" ? linkedLights(doc).map(l => l.toObject()) : [];
+    await scene.deleteEmbeddedDocuments(type, [doc.id]);  // the deleteTile hook removes linked lights
+    this.pushUndo(`delete ${type === "Tile" ? "tile" : "light"}`, async () => {
+      await scene.createEmbeddedDocuments(type, [data], { keepId: true });
+      const missing = lights.filter(l => !scene.lights.has(l._id));
+      if (missing.length) await scene.createEmbeddedDocuments("AmbientLight", missing, { keepId: true });
+    });
     this.palette.render();
     this.#updateCursor(canvas.mousePosition);
   }

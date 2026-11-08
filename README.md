@@ -34,7 +34,7 @@ don't publish them.
 | Doors & windows | Hover an editor wall and click. Door art opens with Foundry's swing animation; art from `Windows/` makes a window that blocks movement but not sight. Click an opening again to remove it. |
 | Objects | Click to place a tile. Shift+wheel rotates, Ctrl+wheel scales. Ctrl+click several assets to place random variants. Torches, braziers, candles and other light sources get a matching light. |
 | Scatter | Drag to sprinkle the selected objects. Spacing grows with object size. |
-| Select | Click a path, wall or opening; Delete removes it. Shows map stats and can restore flattened objects. |
+| Select | Click a path, wall, opening, tile or light (lights show as yellow dots); Delete removes it. Tiles and lights can be dragged (Shift toggles snapping; an object's light moves with it). Shift+wheel rotates and Ctrl+wheel scales a tile. Double-click opens Foundry's settings sheet; the palette has Mirror, To front/back and Hide. Also shows map stats and can restore flattened objects. |
 | Bake | Renders terrain, paths, wall art (and optionally the editor's objects) into one WebP and makes it the level background. Players only see the map after baking. |
 
 Ctrl+Z undoes the last 30 editor actions. The map autosaves into the scene; painted masks are uploaded as PNGs to
