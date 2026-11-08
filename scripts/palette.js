@@ -204,12 +204,12 @@ export class BattlemapPalette extends foundry.applications.api.ApplicationV2 {
       const d = store.data;
       const layers = [...d.layers].reverse().map(l => `
         <li class="bme-layer">
-          <img src="${thumbOf(l.src)}" alt=""><span>${nameOf(l.src)}</span>
+          <a class="bme-layer-pick" data-action-bme="layer-select" data-src="${esc(l.src)}" data-tooltip="Select this texture"><img src="${thumbOf(l.src)}" alt=""><span>${nameOf(l.src)}</span></a>
           <a data-action-bme="layer-up" data-id="${l.id}" data-tooltip="Move up"><i class="fa-solid fa-arrow-up"></i></a>
           <a data-action-bme="layer-down" data-id="${l.id}" data-tooltip="Move down"><i class="fa-solid fa-arrow-down"></i></a>
           <a data-action-bme="layer-remove" data-id="${l.id}" data-tooltip="Remove"><i class="fa-solid fa-xmark"></i></a>
         </li>`).join("");
-      const base = d.base ? `<li class="bme-layer bme-base"><img src="${thumbOf(d.base.src)}" alt=""><span>${nameOf(d.base.src)}</span><em>base</em></li>`
+      const base = d.base ? `<li class="bme-layer bme-base"><a class="bme-layer-pick" data-action-bme="layer-select" data-src="${esc(d.base.src)}" data-tooltip="Select this texture"><img src="${thumbOf(d.base.src)}" alt=""><span>${nameOf(d.base.src)}</span></a><em>base</em></li>`
         : `<li class="bme-layer bme-base"><span>${d.underlay ? "Existing background" : "No base yet: click a texture, then click the map"}</span><em>base</em></li>`;
       return `
         <section class="bme-extras">
@@ -307,6 +307,7 @@ export class BattlemapPalette extends foundry.applications.api.ApplicationV2 {
       case "layer-up": return this.layer.moveLayer(id, 1);
       case "layer-down": return this.layer.moveLayer(id, -1);
       case "layer-remove": return this.layer.removeLayer(id);
+      case "layer-select": return this.selectAsset(a.dataset.src);
       case "delete": return this.layer.deleteSelected();
       case "unflatten": return this.layer.unflatten();
       case "path-mirror": return this.layer.editPath("mirror");
@@ -494,6 +495,37 @@ export class BattlemapPalette extends foundry.applications.api.ApplicationV2 {
       return;
     }
     this.#choose(this.#entryOf(item), ev, i);
+  }
+
+  /**
+   * Select one asset and scroll the browser to it. If the folder or search filter hides it, switch to the
+   * asset's folder and clear the search.
+   */
+  selectAsset(src) {
+    const tool = this.tool;
+    const asset = EditorCatalog.current?.get(src);
+    this.#choose(src, {});
+    if (!asset || !this.#grid || !this.#apply) return;
+    const f = this.filterFor(tool);
+    let index = this.#items.findIndex(it => it.asset.src === src && it.n <= 1);
+    if (index < 0) {
+      f.folder = asset.folder ?? "";
+      f.query = "";
+      f.expand = null;
+      const root = this.element;
+      root.querySelector(".bme-query").value = "";
+      const folderSel = root.querySelector(".bme-folder");
+      folderSel.value = f.folder;
+      if (folderSel.value !== f.folder) { f.folder = ""; folderSel.value = ""; }
+      this.#apply();
+      index = this.#items.findIndex(it => it.asset.src === src);
+    }
+    if (index < 0) return;
+    const g = this.#grid;
+    const row = Math.floor(index / g.cols);
+    g.el.scrollTop = Math.max(0, row * CELL - (g.el.clientHeight - CELL) / 2);
+    f.scroll = g.el.scrollTop;
+    this.#drawGrid();
   }
 
   /** Select a palette entry (Ctrl: toggle, Shift: range in the grid, otherwise replace). */

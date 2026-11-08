@@ -129,6 +129,23 @@
   opacity: 1;
 }
 
+.bme-layer a.bme-layer-pick {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 1;
+  padding: 0;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.bme-layer a.bme-layer-pick:hover {
+  background: rgba(127, 127, 127, 0.2);
+  text-shadow: none;
+}
+
 .bme-layer em {
   font-size: 0.8em;
   opacity: 0.6;

@@ -28,7 +28,7 @@ don't publish them.
 
 | Tool | What it does |
 |---|---|
-| Paint terrain | The first texture you click fills the map; then drag to paint others on top. Alt-drag erases. Ctrl/Shift+wheel: brush size. Layers can be reordered or removed in the palette. |
+| Paint terrain | The first texture you click fills the map; then drag to paint others on top. Alt-drag erases. Ctrl/Shift+wheel: brush size. Layers can be reordered or removed in the palette; click a layer to select its texture again. |
 | Paths | Click points; double-click, right-click or Enter finishes. Backspace removes the last point, Esc cancels. Roads, rivers, cliffs, fences. *Roughness* adds a natural wobble to the line (cliff edges, riverbanks); each path gets its own noise. |
 | Walls | Click grid points (Shift: free), click the first point to close a room. Draws the wall art and creates Foundry walls (normal, terrain, invisible, ethereal, or art only). With no art selected you get Foundry walls only. |
 | Doors & windows | Hover an editor wall and click. Door art opens with Foundry's swing animation; art from `Windows/` makes a window that blocks movement but not sight. Click an opening again to remove it. |
