@@ -1,0 +1,11 @@
+{
+  "id": "pf2e-battlemap-editor",
+  "title": "Battlemap Editor (FA packs)",
+  "description": "A Dungeondraft-style battlemap editor inside Foundry, using your own Forgotten Adventures Dungeondraft packs: paint terrain, draw paths and walls (which create Foundry walls), cut doors and windows, stamp and scatter objects (with automatic lights), then bake everything into the scene background.",
+  "version": "0.1.0",
+  "authors": [{ "name": "cedi" }],
+  "compatibility": { "minimum": "14", "verified": "14" },
+  "esmodules": ["scripts/main.js"],
+  "styles": ["styles/editor.css"],
+  "languages": []
+}

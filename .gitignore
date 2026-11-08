@@ -1,0 +1,20 @@
+# Licensed Forgotten Adventures content: never commit
+*.dungeondraft_pack
+fa-packs/
+fa-assets/
+assets/fa/
+*.webp
+*.png
+*.jpg
+*.jpeg
+
+# Python / tooling
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+
+# OS / editor
+Thumbs.db
+.DS_Store
+.vscode/

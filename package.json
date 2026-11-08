@@ -1,0 +1,8 @@
+{
+  "name": "pf2e-battlemap-editor",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check scripts/*.js"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "_comment": "Which parts of the FA Dungeondraft packs to extract. 'include' entries are path prefixes relative to the pack; 'exclude' entries are regexes tested against the same path. Patterns (large fill images) are off by default; the editor does not use them yet.",
+  "include": [
+    "textures/terrain/",
+    "textures/walls/",
+    "textures/paths/",
+    "textures/portals/",
+    "textures/objects/",
+    "textures/lights/",
+    "textures/tilesets/"
+  ],
+  "exclude": []
+}
