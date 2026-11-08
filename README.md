@@ -32,8 +32,8 @@ don't publish them.
 | Paths | Click points; double-click, right-click or Enter finishes. Backspace removes the last point, Esc cancels. Roads, rivers, cliffs, fences. |
 | Walls | Click grid points (Shift: free), click the first point to close a room. Draws the wall art and creates Foundry walls (normal, terrain, invisible, ethereal, or art only). With no art selected you get Foundry walls only. |
 | Doors & windows | Hover an editor wall and click. Door art opens with Foundry's swing animation; art from `Windows/` makes a window that blocks movement but not sight. Click an opening again to remove it. |
-| Objects | Click to place a tile. Shift+wheel rotates, Ctrl+wheel scales. Ctrl+click several assets to place random variants. Torches, braziers, candles and other light sources get a matching light. |
-| Scatter | Drag to sprinkle the selected objects. Spacing grows with object size. |
+| Objects | Click to place a tile. Shift+wheel rotates, Ctrl+wheel scales. Variants of the same object (e.g. Arctic Fir Tree Snow Large A1…A5) show as one cell marked ×N, which places a random variant each time; click the ×N badge to pick one exact variant. The *Group* checkbox turns this off. Ctrl+click several cells to mix them. Torches, braziers, candles and other light sources get a matching light. |
+| Scatter | Drag to sprinkle the selected objects. Spacing grows with object size. With *Always mix variants* (on by default), even an exact variant you picked is mixed with its siblings. |
 | Select | Click a path, wall, opening, tile or light (lights show as yellow dots); Delete removes it. Tiles and lights can be dragged (Shift toggles snapping; an object's light moves with it). Shift+wheel rotates and Ctrl+wheel scales a tile. Double-click opens Foundry's settings sheet; the palette has Mirror, To front/back and Hide. Also shows map stats and can restore flattened objects. |
 | Bake | Renders terrain, paths, wall art (and optionally the editor's objects) into one WebP and makes it the level background. Players only see the map after baking. |
 

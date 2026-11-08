@@ -170,8 +170,70 @@
 
 .bme-filters {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr auto;
   gap: 4px;
+  align-items: center;
+}
+
+.bme-groupvar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+.bme-drill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 0.85em;
+}
+
+.bme-drill[hidden] {
+  display: none;
+}
+
+.bme-drill span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bme-drill button {
+  flex: 0 0 auto;
+  width: auto;
+  line-height: 1.6;
+  padding: 0 8px;
+}
+
+.bme-drill button.active {
+  border-color: var(--color-border-highlight, #ff6400);
+  background: rgba(255, 100, 0, 0.25);
+}
+
+.bme-drill .bme-back {
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.bme-varcount {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.75);
+  color: #fff;
+  font-size: 11px;
+  line-height: 15px;
+  cursor: zoom-in;
+}
+
+.bme-varcount:hover {
+  background: var(--color-border-highlight, #ff6400);
 }
 
 .bme-grid {

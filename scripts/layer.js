@@ -17,7 +17,8 @@ export const DEFAULT_SETTINGS = {
   wall: { type: "normal", width: 1, snap: true },
   door: { width: 1, secret: false },
   object: { rotation: 0, scale: 1, randomRotation: false, randomMirror: false, scaleJitter: 0, snap: false, autoLight: true },
-  scatter: { radius: 2, density: 0.5, spacing: 0.2, randomRotation: true, randomMirror: true, scaleJitter: 0.15, autoLight: false }
+  scatter: { radius: 2, density: 0.5, spacing: 0.2, randomRotation: true, randomMirror: true, scaleJitter: 0.15, autoLight: false, variants: true },
+  browse: { groupVariants: true }
 };
 
 const UNDO_LIMIT = 30;
@@ -215,11 +216,40 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     this.#settingsTimer = setTimeout(() => game.settings.set(MODULE_ID, "toolState", this.settings), 800);
   }
 
-  /** Selected assets for a tool, resolved from the catalog. */
-  selection(tool = this.tool) {
+  /**
+   * Selected palette entries for a tool. An entry is an asset src (that exact asset) or "group:<key>"
+   * (a random variant each time). With the scatter option "Always mix variants", single assets expand too.
+   * @returns {{entry: string, asset: object, assets: object[], group: string|null}[]}
+   */
+  selectionItems(tool = this.tool) {
     const cat = this.catalog;
     if (!cat) return [];
-    return (this.settings.selection[tool] ?? []).map(src => cat.get(src)).filter(Boolean);
+    const expand = tool === "scatter" && this.settings.scatter.variants;
+    const items = [];
+    for (const entry of this.settings.selection[tool] ?? []) {
+      if (entry.startsWith("group:")) {
+        const key = entry.slice(6);
+        const assets = cat.groups.get(key);
+        if (assets?.length) items.push({ entry, asset: assets[0], assets, group: key });
+        continue;
+      }
+      const asset = cat.get(entry);
+      if (!asset) continue;
+      items.push({ entry, asset, assets: expand ? cat.variants(asset) : [asset], group: null });
+    }
+    return items;
+  }
+
+  /** Selected assets for a tool (one representative per group entry). */
+  selection(tool = this.tool) {
+    return this.selectionItems(tool).map(i => i.asset);
+  }
+
+  /** A random asset from the selection: pick an entry, then one of its variants. */
+  #pickAsset(items) {
+    if (!items.length) return null;
+    const item = items[Math.floor(Math.random() * items.length)];
+    return item.assets[Math.floor(Math.random() * item.assets.length)];
   }
 
   setSelection(tool, srcs) {
@@ -961,9 +991,8 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
 
   rollNext() {
     const tool = this.tool === "scatter" ? "scatter" : "object";
-    const list = this.selection(tool);
     const s = this.settings[tool];
-    const asset = list.length ? list[Math.floor(Math.random() * list.length)] : null;
+    const asset = this.#pickAsset(this.selectionItems(tool));
     this.#roll = {
       asset,
       rotation: s.randomRotation ? Math.floor(Math.random() * 24) * 15 : 0,
@@ -1003,7 +1032,7 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
   }
 
   #beginScatter() {
-    const list = this.selection("scatter");
+    const list = this.selectionItems("scatter");
     if (!list.length) {
       ui.notifications.warn("Battlemap Editor: select one or more objects in the palette (Ctrl+click for several).");
       return;
@@ -1030,7 +1059,7 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     const others = [...existing, ...sc.placed];
     let added = 0;
     for (let i = 0; i < count * 6 && added < count && sc.queue.length < 500; i++) {
-      const asset = sc.list[Math.floor(Math.random() * sc.list.length)];
+      const asset = this.#pickAsset(sc.list);
       const scale = 1 + (Math.random() * 2 - 1) * (s.scaleJitter ?? 0);
       const cr = radiusOf((asset.w / ppi) * G * scale, (asset.h / ppi) * G * scale);
       const ang = Math.random() * Math.PI * 2, rr = Math.sqrt(Math.random()) * r;

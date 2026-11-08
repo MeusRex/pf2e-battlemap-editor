@@ -24,11 +24,11 @@ const TOOL_INFO = {
   },
   object: {
     title: "Objects", icon: "fa-solid fa-chess-rook",
-    hint: "Click to place a tile. Shift+wheel rotates, Ctrl+wheel scales. Ctrl+click several assets to place random variants. Light sources get a matching light."
+    hint: "Click to place a tile. Shift+wheel rotates, Ctrl+wheel scales. A cell marked ×N places a random variant each time; click the ×N badge to pick one exact variant. Ctrl+click several to mix. Light sources get a matching light."
   },
   scatter: {
     title: "Scatter", icon: "fa-solid fa-seedling",
-    hint: "Drag to sprinkle the selected objects (Ctrl+click several). Each stroke is one undo step."
+    hint: "Drag to sprinkle the selected objects (Ctrl+click several). Variants are mixed in automatically. Each stroke is one undo step."
   },
   pick: {
     title: "Select", icon: "fa-solid fa-arrow-pointer",
@@ -73,6 +73,7 @@ const OPTIONS = {
     ["scatter.density", "Density (per square)", "range", { min: 0.05, max: 3, step: 0.05 }],
     ["scatter.spacing", "Extra spacing (squares)", "range", { min: 0, max: 4, step: 0.1 }],
     ["scatter.scaleJitter", "Random scale ±", "range", { min: 0, max: 0.5, step: 0.05 }],
+    ["scatter.variants", "Always mix variants", "checkbox"],
     ["scatter.randomRotation", "Random rotation", "checkbox"],
     ["scatter.randomMirror", "Random mirror", "checkbox"],
     ["scatter.autoLight", "Lights for light sources", "checkbox"]
@@ -108,13 +109,14 @@ export class BattlemapPalette extends foundry.applications.api.ApplicationV2 {
   #grid = null;
   #renderToken = 0;
   #resizeObserver = null;
+  #apply = null;
 
   get tool() {
     return this.layer.tool;
   }
 
   filterFor(tool) {
-    return (this.filters[tool] ??= { folder: "", query: "", scroll: 0 });
+    return (this.filters[tool] ??= { folder: "", query: "", scroll: 0, expand: null, scrollBack: 0 });
   }
 
   /* -------------------------------------------- */
@@ -140,7 +142,9 @@ export class BattlemapPalette extends foundry.applications.api.ApplicationV2 {
         <div class="bme-filters">
           <select name="folder" class="bme-folder"><option value="">All folders</option></select>
           <input type="search" name="query" class="bme-query" placeholder="Search names and tags…">
+          ${MULTI.has(tool) ? `<label class="bme-groupvar" data-tooltip="Show each set of variants as one cell"><input type="checkbox" name="groupVariants" ${this.layer.settings.browse.groupVariants ? "checked" : ""}> Group</label>` : ""}
         </div>
+        <div class="bme-drill" hidden></div>
         <div class="bme-grid"><div class="bme-spacer"></div></div>
         <footer class="bme-count"></footer>
       </section>` : ""}`;
@@ -326,18 +330,56 @@ export class BattlemapPalette extends foundry.applications.api.ApplicationV2 {
       return `<option value="${esc(fo)}" ${fo === f.folder ? "selected" : ""}>${"  ".repeat(depth)}${esc(fo.split("/").pop().replace(/_/g, " "))}</option>`;
     }).join(""));
 
+    const drill = root.querySelector(".bme-drill");
+    const grouping = root.querySelector("[name=groupVariants]");
     const apply = () => {
-      this.#items = EditorCatalog.filter(all, f);
-      count.textContent = `${this.#items.length.toLocaleString()} of ${all.length.toLocaleString()} assets`;
+      const variants = f.expand ? cat.groups.get(f.expand) : null;
+      if (variants) {
+        // Drilled into one variant group: every variant is its own cell.
+        this.#items = variants.map(asset => ({ asset, key: null, n: 1 }));
+        const entry = `group:${f.expand}`;
+        const active = (this.layer.settings.selection[tool] ?? []).includes(entry);
+        drill.innerHTML = `<a class="bme-back" data-tooltip="Back to all assets"><i class="fa-solid fa-chevron-left"></i></a>
+          <span>${esc(EditorCatalog.groupName(f.expand))}: ${variants.length} variants</span>
+          <button type="button" class="bme-anyvar ${active ? "active" : ""}"><i class="fa-solid fa-shuffle"></i> Any variant</button>`;
+        drill.querySelector(".bme-back").addEventListener("click", () => {
+          f.expand = null;
+          f.scroll = f.scrollBack ?? 0;
+          apply();
+          grid.scrollTop = f.scroll;
+        });
+        drill.querySelector(".bme-anyvar").addEventListener("click", ev => this.#choose(entry, ev));
+        drill.hidden = false;
+        count.textContent = "Click a variant to always place that one.";
+      } else {
+        f.expand = null;
+        drill.hidden = true;
+        drill.innerHTML = "";
+        const matches = EditorCatalog.filter(all, f);
+        const grouped = MULTI.has(tool) && this.layer.settings.browse.groupVariants;
+        this.#items = grouped ? cat.collapse(matches) : matches.map(asset => ({ asset, key: null, n: 1 }));
+        count.textContent = grouped
+          ? `${this.#items.length.toLocaleString()} objects (${matches.length.toLocaleString()} files) of ${all.length.toLocaleString()}`
+          : `${matches.length.toLocaleString()} of ${all.length.toLocaleString()} assets`;
+      }
       this.#layoutGrid();
     };
+    this.#apply = apply;
+    grouping?.addEventListener("change", () => {
+      this.layer.settings.browse.groupVariants = grouping.checked;
+      this.layer.saveSettings();
+      grid.scrollTop = 0;
+      apply();
+    });
     folderSel.addEventListener("change", () => {
       f.folder = folderSel.value;
+      f.expand = null;
       grid.scrollTop = 0;
       apply();
     });
     query.addEventListener("input", foundry.utils.debounce(() => {
       f.query = query.value;
+      f.expand = null;
       grid.scrollTop = 0;
       apply();
     }, 200));
@@ -372,6 +414,7 @@ export class BattlemapPalette extends foundry.applications.api.ApplicationV2 {
     const first = Math.max(0, Math.floor(top / CELL) - 2) * g.cols;
     const last = Math.min(this.#items.length, (Math.ceil((top + h) / CELL) + 2) * g.cols);
     const selected = new Set(this.layer.settings.selection[this.tool] ?? []);
+    const cat = EditorCatalog.current;
     for (const [i, node] of g.drawn) {
       if (i < first || i >= last) {
         node.remove();
@@ -381,57 +424,95 @@ export class BattlemapPalette extends foundry.applications.api.ApplicationV2 {
     const ppi = EditorCatalog.current?.ppi ?? 256;
     for (let i = first; i < last; i++) {
       if (g.drawn.has(i)) continue;
-      const a = this.#items[i];
+      const item = this.#items[i];
+      const a = item.asset;
       const cell = document.createElement("div");
-      cell.className = `bme-cell${selected.has(a.src) ? " selected" : ""}`;
+      cell.className = `bme-cell${selected.has(this.#entryOf(item)) ? " selected" : ""}`;
       cell.dataset.index = String(i);
       cell.style.transform = `translate(${(i % g.cols) * CELL}px, ${Math.floor(i / g.cols) * CELL}px)`;
       const size = a.w && a.h ? ` · ${+(a.w / ppi).toFixed(1)}×${+(a.h / ppi).toFixed(1)}` : "";
-      cell.dataset.tooltipHtml = `${esc(a.name.replace(/_/g, " "))}${size}<br><small>${esc(a.folder)}</small>`;
-      cell.innerHTML = `<img src="${esc(a.thumb)}" loading="lazy" decoding="async" alt="">`;
+      if (item.n > 1) {
+        cell.dataset.tooltipHtml = `${esc(EditorCatalog.groupName(item.key))}${size}<br><small>${item.n} variants: click places a random one, `
+          + `click ×${item.n} to choose an exact one</small><br><small>${esc(a.folder)}</small>`;
+        cell.innerHTML = `<img src="${esc(a.thumb)}" loading="lazy" decoding="async" alt=""><span class="bme-varcount">×${item.n}</span>`;
+      } else {
+        const variantOf = a.group && cat?.groups.get(a.group)?.length > 1;
+        cell.dataset.tooltipHtml = `${esc(a.name.replace(/_/g, " "))}${size}${variantOf ? "<br><small>this exact variant</small>" : ""}<br><small>${esc(a.folder)}</small>`;
+        cell.innerHTML = `<img src="${esc(a.thumb)}" loading="lazy" decoding="async" alt="">`;
+      }
       g.spacer.appendChild(cell);
       g.drawn.set(i, cell);
     }
   }
 
+  /** Selection entry of a grid item: a whole variant group, or one exact asset. */
+  #entryOf(item) {
+    return item.key && item.n > 1 ? `group:${item.key}` : item.asset.src;
+  }
+
   #onCellClick(ev) {
     const cell = ev.target.closest(".bme-cell");
     if (!cell) return;
-    const a = this.#items[Number(cell.dataset.index)];
-    if (!a) return;
+    const i = Number(cell.dataset.index);
+    const item = this.#items[i];
+    if (!item) return;
+    if (ev.target.closest(".bme-varcount")) {
+      // Drill into the group to pick one exact variant.
+      const f = this.filterFor(this.tool);
+      f.scrollBack = this.#grid.el.scrollTop;
+      f.expand = item.key;
+      f.scroll = 0;
+      this.#grid.el.scrollTop = 0;
+      this.#apply?.();
+      return;
+    }
+    this.#choose(this.#entryOf(item), ev, i);
+  }
+
+  /** Select a palette entry (Ctrl: toggle, Shift: range in the grid, otherwise replace). */
+  #choose(entry, ev, index = -1) {
     const tool = this.tool;
     let sel = [...(this.layer.settings.selection[tool] ?? [])];
     if (MULTI.has(tool) && (ev.ctrlKey || ev.metaKey)) {
-      sel = sel.includes(a.src) ? sel.filter(s => s !== a.src) : [...sel, a.src];
-    } else if (MULTI.has(tool) && ev.shiftKey && sel.length) {
-      const lastIdx = this.#items.findIndex(x => x.src === sel[sel.length - 1]);
-      const i = Number(cell.dataset.index);
+      sel = sel.includes(entry) ? sel.filter(s => s !== entry) : [...sel, entry];
+    } else if (MULTI.has(tool) && ev.shiftKey && sel.length && index >= 0) {
+      const lastIdx = this.#items.findIndex(x => this.#entryOf(x) === sel[sel.length - 1]);
       if (lastIdx >= 0) {
-        const [lo, hi] = [Math.min(lastIdx, i), Math.max(lastIdx, i)];
-        for (let k = lo; k <= hi && sel.length < 200; k++) if (!sel.includes(this.#items[k].src)) sel.push(this.#items[k].src);
+        const [lo, hi] = [Math.min(lastIdx, index), Math.max(lastIdx, index)];
+        for (let k = lo; k <= hi && sel.length < 200; k++) {
+          const e = this.#entryOf(this.#items[k]);
+          if (!sel.includes(e)) sel.push(e);
+        }
       }
     } else {
-      sel = [a.src];
+      sel = [entry];
     }
     this.layer.setSelection(tool, sel);
-    for (const node of this.#grid.drawn.values()) {
+    for (const node of this.#grid?.drawn.values() ?? []) {
       const it = this.#items[Number(node.dataset.index)];
-      node.classList.toggle("selected", sel.includes(it?.src));
+      node.classList.toggle("selected", !!it && sel.includes(this.#entryOf(it)));
     }
+    const expanded = this.filterFor(tool).expand;
+    this.element?.querySelector(".bme-anyvar")?.classList.toggle("active", !!expanded && sel.includes(`group:${expanded}`));
     this.#renderSelected();
   }
 
   #renderSelected() {
     const box = this.element?.querySelector(".bme-selected");
     if (!box) return;
-    const assets = this.layer.selection(this.tool);
-    if (!assets.length) {
+    const items = this.layer.selectionItems(this.tool);
+    if (!items.length) {
       box.innerHTML = `<span class="hint">Nothing selected${MULTI.has(this.tool) ? " (Ctrl+click for several)" : ""}.</span>`;
       return;
     }
-    const shown = assets.slice(0, 10).map(a => `<img src="${esc(a.thumb)}" data-tooltip="${esc(a.name.replace(/_/g, " "))}" alt="">`).join("");
-    const more = assets.length > 10 ? `<span>+${assets.length - 10}</span>` : "";
-    box.innerHTML = `${shown}${more}<span class="bme-selname">${assets.length === 1 ? esc(assets[0].name.replace(/_/g, " ")) : `${assets.length} selected`}</span>`;
+    const label = it => (it.assets.length > 1
+      ? `${EditorCatalog.groupName(it.asset.group ?? it.asset.name)} (any of ${it.assets.length})`
+      : it.asset.name.replace(/_/g, " "));
+    const shown = items.slice(0, 10).map(it => `<img src="${esc(it.asset.thumb)}" data-tooltip="${esc(label(it))}" alt="">`).join("");
+    const more = items.length > 10 ? `<span>+${items.length - 10}</span>` : "";
+    const variants = items.reduce((n, it) => n + it.assets.length, 0);
+    const name = items.length === 1 ? label(items[0]) : `${items.length} selected${variants > items.length ? `, ${variants} variants` : ""}`;
+    box.innerHTML = `${shown}${more}<span class="bme-selname">${esc(name)}</span>`;
   }
 
   /** @override */

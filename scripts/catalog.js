@@ -12,6 +12,7 @@ import { MODULE_ID } from "./constants.js";
  * @property {number} w       pixel width (256 px per grid square)
  * @property {number} h       pixel height
  * @property {string[]} tags
+ * @property {string|null} group  variant group key (objects that differ only by variant number)
  * @property {string} search  lower-case haystack for text search
  */
 
@@ -33,26 +34,48 @@ async function fetchJson(url) {
   return res.json();
 }
 
+/** Kinds whose assets are grouped into variant sets. */
+const GROUPED_KINDS = new Set(["object"]);
+
+/**
+ * The variant stem of an FA file name, or null if it has no variant number.
+ * FA names end in `_<design letter><variant number>_<W>x<H>`, e.g. Arctic_Fir_Tree_Snow_Large_A3_4x4:
+ * the number is the variant, the letter (and size word) a different design. Names without a number
+ * (MagicCircle_Arcane_Colorable_B_2x2) are distinct designs and stay on their own.
+ */
+export function variantStem(name) {
+  const n = name.replace(/_\d+x\d+$/, "");
+  const m = n.match(/^(.*_[A-Za-z]{1,2})\d+(?:_\d+)?$/);
+  return m ? m[1] : null;
+}
+
 function buildAssets(kind, entries, data, base) {
   const folderName = KIND_FOLDERS[kind];
-  return entries.map(([pack, rel, w, h, tagIds, thumb]) => {
+  const seen = new Set();
+  const out = [];
+  for (const [pack, rel, w, h, tagIds, thumb] of entries) {
     const packId = data.packs[pack];
+    const id = `${packId}/${rel}`;
+    if (seen.has(id)) continue;  // some packs list the same file many times
+    seen.add(id);
     const slash = rel.lastIndexOf("/");
     const file = rel.slice(slash + 1);
     const inKind = rel.startsWith(`${folderName}/`) ? rel.slice(folderName.length + 1) : rel;
     const name = file.replace(/\.[^.]+$/, "");
     const tags = Array.isArray(tagIds) ? tagIds.map(i => data.tags[i]) : [];
     const src = `${base}/${packId}/textures/${rel}`;
-    return {
-      id: `${packId}/${rel}`,
-      kind, src,
+    const folder = slash > 0 ? rel.slice(0, slash) : "";
+    const stem = GROUPED_KINDS.has(kind) ? variantStem(name) : null;
+    out.push({
+      id, kind, src,
       thumb: thumb ? `${base}/${packId}/thumbs/${rel.replace(/\.[^.]+$/, ".png")}` : src,
       rel: inKind,
-      folder: slash > 0 ? rel.slice(0, slash) : "",
-      name, w, h, tags,
+      folder, name, w, h, tags,
+      group: stem ? `${packId}/${folder}/${stem}` : null,
       search: `${inKind} ${tags.join(" ")}`.toLowerCase().replace(/_/g, " ")
-    };
-  });
+    });
+  }
+  return out;
 }
 
 export class EditorCatalog {
@@ -112,14 +135,59 @@ export class EditorCatalog {
     }
   }
 
+  /** @type {Map<string, Asset[]>} variant group key -> its assets, in natural order */
+  groups = new Map();
+
   #add(kind, assets) {
     this.kinds[kind] = assets;
-    for (const a of assets) this.bySrc.set(a.src, a);
+    for (const a of assets) {
+      this.bySrc.set(a.src, a);
+      if (!a.group) continue;
+      let g = this.groups.get(a.group);
+      if (!g) this.groups.set(a.group, g = []);
+      g.push(a);
+    }
+    for (const [key, g] of this.groups) {
+      if (g.length < 2) {
+        for (const a of g) a.group = null;  // a single "variant" is just an asset
+        this.groups.delete(key);
+      } else g.sort((x, y) => x.name.localeCompare(y.name, undefined, { numeric: true }));
+    }
   }
 
   /** @returns {Asset|undefined} */
   get(src) {
     return this.bySrc.get(src);
+  }
+
+  /** All variants of an asset (just the asset if it has none). */
+  variants(asset) {
+    return (asset?.group && this.groups.get(asset.group)) || (asset ? [asset] : []);
+  }
+
+  /** Display name of a variant group: the shared stem. */
+  static groupName(key) {
+    return key.split("/").pop().replace(/_/g, " ");
+  }
+
+  /**
+   * Collapse a list of assets to one entry per variant group (first match represents the group).
+   * @param {Asset[]} assets
+   * @returns {{asset: Asset, key: string|null, n: number}[]}
+   */
+  collapse(assets) {
+    const out = [];
+    const seen = new Set();
+    for (const a of assets) {
+      if (!a.group) {
+        out.push({ asset: a, key: null, n: 1 });
+        continue;
+      }
+      if (seen.has(a.group)) continue;
+      seen.add(a.group);
+      out.push({ asset: a, key: a.group, n: this.groups.get(a.group)?.length ?? 1 });
+    }
+    return out;
   }
 
   /**
