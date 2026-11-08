@@ -45,8 +45,10 @@ You can also paint on top of a scene that already has a background image: the im
 
 ## Notes
 
-- FA terrain textures carry a blend-weight alpha channel (Dungeondraft uses it for height blending). The editor
-  draws them opaque; transitions use the soft brush edge.
+- FA terrain textures carry a height map in their alpha channel. By default the editor ignores it and transitions
+  use the soft brush edge. Turn on **Terrain height blending** in the module settings for Dungeondraft-style borders,
+  where stones and grass tufts poke through first; *Height blending softness* sets how crisp they are. With it on, a
+  brush opacity below 1 shows only the raised parts of a texture. Existing maps change on the next bake.
 - Baking renders in 4096 px chunks; the scene must fit in one image (16384 px per side). At 100 px per square that
   is 163 squares.
 - *Flatten objects* paints the editor's tiles into the image and removes the tiles. They are kept in the map data,

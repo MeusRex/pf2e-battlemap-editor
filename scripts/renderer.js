@@ -35,20 +35,40 @@ void main() {
   gl_FragColor = vec4(texture2D(uSampler, vTextureCoord).rgb, 1.0);
 }`;
 
+const RAW_CACHE = new Map();
+
 /**
- * FA terrain textures carry a blend-weight alpha channel (Dungeondraft uses it for height blending), so drawn
- * as-is they come out as faint washes. Load them without premultiplication and redraw them fully opaque.
+ * A terrain texture loaded without premultiplication: rgb is the colour, alpha is Dungeondraft's height map.
+ * @returns {Promise<PIXI.Texture|null>}
+ */
+export function rawTexture(src) {
+  if (RAW_CACHE.has(src)) return RAW_CACHE.get(src);
+  const p = (async () => {
+    const res = await fetch(encodeURI(src));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const bmp = await createImageBitmap(await res.blob(), { premultiplyAlpha: "none" });
+    const base = new PIXI.BaseTexture(bmp, { alphaMode: PIXI.ALPHA_MODES.NPM, wrapMode: PIXI.WRAP_MODES.REPEAT });
+    return new PIXI.Texture(base);
+  })().catch(err => {
+    console.warn(`${MODULE_ID} | could not load ${src}`, err);
+    RAW_CACHE.delete(src);
+    return null;
+  });
+  RAW_CACHE.set(src, p);
+  return p;
+}
+
+/**
+ * FA terrain textures carry a height-map alpha channel (Dungeondraft uses it for height blending), so drawn
+ * as-is they come out as faint washes. Redraw them fully opaque for the base layer.
  * @returns {Promise<PIXI.Texture|null>}
  */
 export function opaqueTexture(src) {
   if (OPAQUE_CACHE.has(src)) return OPAQUE_CACHE.get(src);
   const p = (async () => {
-    const res = await fetch(encodeURI(src));
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const bmp = await createImageBitmap(await res.blob(), { premultiplyAlpha: "none" });
-    const base = new PIXI.BaseTexture(bmp, { alphaMode: PIXI.ALPHA_MODES.NPM });
-    const raw = new PIXI.Texture(base);
-    const w = bmp.width, h = bmp.height;
+    const raw = await rawTexture(src);
+    if (!raw) throw new Error("not loaded");
+    const w = raw.width, h = raw.height;
     const geometry = new PIXI.MeshGeometry(
       new Float32Array([0, 0, w, 0, w, h, 0, h]), new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), new Uint16Array([0, 1, 2, 0, 2, 3]));
     const material = new PIXI.MeshMaterial(raw, { program: PIXI.Program.from(OPAQUE_VERT, OPAQUE_FRAG, "bme-opaque") });
@@ -56,8 +76,6 @@ export function opaqueTexture(src) {
     const rt = PIXI.RenderTexture.create({ width: w, height: h, resolution: 1 });
     canvas.app.renderer.render(mesh, { renderTexture: rt, clear: true });
     mesh.destroy();
-    raw.destroy(true);
-    bmp.close?.();
     rt.baseTexture.wrapMode = PIXI.WRAP_MODES.REPEAT;
     return rt;
   })().catch(err => {
@@ -67,6 +85,66 @@ export function opaqueTexture(src) {
   });
   OPAQUE_CACHE.set(src, p);
   return p;
+}
+
+const LAYER_VERT = `
+attribute vec2 aVertexPosition;
+attribute vec2 aTextureCoord;
+uniform mat3 projectionMatrix;
+uniform mat3 translationMatrix;
+uniform mat3 uTextureMatrix;
+uniform vec2 uTileOffset;
+uniform vec2 uTileSize;
+varying vec2 vMaskCoord;
+varying vec2 vTileCoord;
+void main() {
+  gl_Position = vec4((projectionMatrix * translationMatrix * vec3(aVertexPosition, 1.0)).xy, 0.0, 1.0);
+  vMaskCoord = aTextureCoord;
+  vTileCoord = (aVertexPosition - uTileOffset) / uTileSize;
+}`;
+// The painted weight decides how far the layer reaches; with height blending, its high parts (stone tops,
+// grass tufts) show first where the weight is partial, so the soft brush edge becomes a textured border.
+const LAYER_FRAG = `
+varying vec2 vMaskCoord;
+varying vec2 vTileCoord;
+uniform sampler2D uSampler;
+uniform sampler2D uMask;
+uniform vec4 uColor;
+uniform float uHeight;
+uniform float uSoft;
+void main() {
+  vec4 t = texture2D(uSampler, vTileCoord);
+  float w = texture2D(uMask, vMaskCoord).a;
+  float a = w;
+  if (uHeight > 0.5) {
+    float threshold = 1.0 - t.a;
+    float ww = w * (1.0 + 2.0 * uSoft) - uSoft;
+    a = smoothstep(threshold - uSoft, threshold + uSoft, ww);
+  }
+  gl_FragColor = vec4(t.rgb * a, a) * uColor.a;
+}`;
+
+/** Current height-blend settings: {on, soft}. */
+export function blendSettings() {
+  const on = !!game.settings.get(MODULE_ID, "heightBlend");
+  const v = Number(game.settings.get(MODULE_ID, "heightBlendSoftness")) || 0;
+  return { on, soft: 0.02 + Math.min(1, Math.max(0, v)) * 0.4 };
+}
+
+/** One painted terrain layer: tiled texture shown through its mask, optionally height-blended. */
+function layerMesh(raw, maskTexture, { width, height, scale, offset }) {
+  const geometry = new PIXI.MeshGeometry(
+    new Float32Array([0, 0, width, 0, width, height, 0, height]),
+    new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), new Uint16Array([0, 1, 2, 0, 2, 3]));
+  const { on, soft } = blendSettings();
+  const material = new PIXI.MeshMaterial(raw, {
+    program: PIXI.Program.from(LAYER_VERT, LAYER_FRAG, "bme-terrain-layer"),
+    uniforms: {
+      uMask: maskTexture, uHeight: on ? 1 : 0, uSoft: soft,
+      uTileOffset: new Float32Array(offset), uTileSize: new Float32Array([raw.width * scale, raw.height * scale])
+    }
+  });
+  return new PIXI.Mesh(geometry, material);
 }
 
 /**
@@ -169,7 +247,7 @@ export class MapRenderer {
     const base = d.base?.src ? await opaqueTexture(d.base.src) : null;
     const layers = [];
     for (const layer of d.layers) {
-      const [t, mask] = await Promise.all([opaqueTexture(layer.src), this.store.loadMask(layer)]);
+      const [t, mask] = await Promise.all([rawTexture(layer.src), this.store.loadMask(layer)]);
       layers.push({ layer, t, mask });
     }
     if (id !== this.#terrainBuild || this.root.destroyed) return;
@@ -182,20 +260,22 @@ export class MapRenderer {
     }
     for (const { layer, t, mask } of layers) {
       if (!t) continue;
-      const container = new PIXI.Container();
-      const tiling = new PIXI.TilingSprite(t, r.width, r.height);
-      tiling.tileScale.set(scale);
       // Offset each layer's pattern so stacked textures don't line up.
       const hsh = hash(layer.id);
-      tiling.tilePosition.set(((hsh % 1000) / 1000) * t.width * scale, (((hsh >>> 10) % 1000) / 1000) * t.height * scale);
+      const offset = [((hsh % 1000) / 1000) * t.width * scale, (((hsh >>> 10) % 1000) / 1000) * t.height * scale];
       const texture = PIXI.Texture.from(mask, { scaleMode: PIXI.SCALE_MODES.LINEAR });
-      const maskSprite = new PIXI.Sprite(texture);
-      maskSprite.width = r.width;
-      maskSprite.height = r.height;
-      container.addChild(tiling, maskSprite);
-      tiling.mask = maskSprite;
-      this.terrain.addChild(container);
-      this.layerViews.set(layer.id, { container, tiling, mask: maskSprite, texture });
+      const mesh = layerMesh(t, texture, { width: r.width, height: r.height, scale, offset });
+      this.terrain.addChild(mesh);
+      this.layerViews.set(layer.id, { mesh, texture });
+    }
+  }
+
+  /** Apply changed height-blend settings to the painted layers without rebuilding them. */
+  applyBlendSettings() {
+    const { on, soft } = blendSettings();
+    for (const { mesh } of this.layerViews.values()) {
+      mesh.shader.uniforms.uHeight = on ? 1 : 0;
+      mesh.shader.uniforms.uSoft = soft;
     }
   }
 

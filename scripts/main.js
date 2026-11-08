@@ -23,6 +23,28 @@ Hooks.once("init", () => {
     hint: "Where painted masks and baked backgrounds are uploaded. Empty = worlds/<world>/battlemap-editor.",
     scope: "world", config: true, type: String, default: ""
   });
+  const onBlendChange = () => {
+    const layer = canvas[LAYER_NAME];
+    layer?.renderer?.applyBlendSettings();
+    if (layer?.store && !layer.store.isEmpty && layer.store.data.layers.length) {
+      layer.store.touch();
+      layer.refreshVisibility();
+      ui.notifications.info("Battlemap Editor: terrain blending changed. Bake again to update the scene background.");
+    }
+  };
+  game.settings.register(MODULE_ID, "heightBlend", {
+    name: "Terrain height blending",
+    hint: "Blend painted terrain the way Dungeondraft does: the alpha channel of FA textures is a height map, so at "
+      + "brush edges the raised parts (stones, grass tufts) show first, giving crisp, textured borders instead of a "
+      + "soft fade. Also affects partial brush opacity. Re-bake maps to apply it to them.",
+    scope: "world", config: true, type: Boolean, default: false, onChange: onBlendChange
+  });
+  game.settings.register(MODULE_ID, "heightBlendSoftness", {
+    name: "Height blending softness",
+    hint: "0 = hard, crisp borders; 1 = softer transitions. Only used with terrain height blending.",
+    scope: "world", config: true, type: Number, default: 0.25,
+    range: { min: 0, max: 1, step: 0.05 }, onChange: onBlendChange
+  });
   game.settings.register(MODULE_ID, "toolState", {
     scope: "client", config: false, type: Object, default: {}
   });
