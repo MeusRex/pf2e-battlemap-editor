@@ -289,6 +289,9 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
 
   /** @override */
   _onUndoKey(event) {
+    // Foundry matches its undo shortcut by physical key (event.code "KeyZ"). On QWERTZ layouts that is the key
+    // labelled Y, so ignore it unless the typed character really is "z" (see #handleKeyDown for the other half).
+    if (typeof event?.key === "string" && event.key.toLowerCase() !== "z") return false;
     if (this.#draft?.points.length) {
       this.#draft.points.pop();
       this.#draft.curves?.pop();
@@ -345,10 +348,18 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
 
   #handleKeyDown(event) {
     if (!this.active || event.repeat) return;
-    // Foundry skips its Ctrl+Z shortcut while a form control has focus. Palette controls (not text fields) hand
-    // the key to the editor; anywhere else, say why nothing happened.
-    console.log(event.code + " " + event.ctrlKey + " " + event.repeat);
-    if (event.code === "KeyZ" && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && game.keyboard?.hasFocus) {
+    // Ctrl+Z by the typed character, so it works on any keyboard layout. Foundry's own shortcut only fires for
+    // the physical US "Z" key (event.code "KeyZ") and only while no form control has focus; handle every other
+    // case here, so one press never undoes twice.
+    const undo = (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key?.toLowerCase() === "z";
+    if (undo) {
+      const focus = !!game.keyboard?.hasFocus;
+      if (event.code === "KeyZ" && !focus) return;   // Foundry calls _onUndoKey
+      if (!focus) {
+        event.preventDefault();
+        this._onUndoKey(event);
+        return;
+      }
       const el = document.activeElement;
       const text = el?.tagName === "TEXTAREA" || el?.isContentEditable
         || (el?.tagName === "INPUT" && ["text", "search", "number"].includes(el.type));
