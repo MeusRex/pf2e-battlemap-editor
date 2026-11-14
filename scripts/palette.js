@@ -1,6 +1,7 @@
-import { TOOL_KINDS, WALL_TYPES } from "./constants.js";
+import { MODULE_ID, TOOL_KINDS, WALL_TYPES } from "./constants.js";
 import { EditorCatalog } from "./catalog.js";
 import { describe } from "./placeables.js";
+import { layerOfTile } from "./tilelayers.js";
 
 const CELL = 76;
 const esc = s => foundry.utils.escapeHTML(String(s ?? ""));
@@ -177,6 +178,9 @@ export class BattlemapPalette extends foundry.applications.api.ApplicationV2 {
     root.querySelector(".bme-options")?.addEventListener("input", ev => this.#onOption(ev));
     root.querySelector(".bme-options")?.addEventListener("change", ev => this.#onOption(ev));
     root.querySelectorAll("[data-action-bme]").forEach(b => b.addEventListener("click", ev => this.#onAction(ev)));
+    root.querySelector(".bme-tile-layer")?.addEventListener("change", ev => {
+      if (ev.target.value) this.layer.moveTileToLayer(this.layer.selectedDoc, ev.target.value);
+    });
     for (const input of root.querySelectorAll(".bme-pathedit input[type=range]")) {
       const send = final => {
         const v = Number(input.value);
@@ -204,6 +208,36 @@ export class BattlemapPalette extends foundry.applications.api.ApplicationV2 {
       }
       return `<div class="form-group bme-opt"><label>${esc(label)}</label><div class="form-fields">${input}</div></div>`;
     }).join("");
+  }
+
+  /** Tile layer list: active layer for new objects, editor-only hide, lock, order, settings. */
+  #tileLayersHTML() {
+    const layers = this.layer.tileLayers;
+    if (!layers.length) return "";
+    const active = this.layer.activeTileLayer;
+    const units = esc(canvas.scene?.grid.units || "ft");
+    const rows = [...layers].reverse().map(l => {
+      const badges = [
+        l.height ? `<span class="bme-tl-badge" data-tooltip="Height above the floor">+${l.height} ${units}</span>` : "",
+        l.occlusion !== "none" ? `<i class="fa-solid fa-person-walking-arrow-right" data-tooltip="Fades when a token is under it"></i>` : "",
+        l.flatten ? "" : `<i class="fa-solid fa-image-slash" data-tooltip="Stays a tile when baking (not flattened)"></i>`
+      ].join("");
+      const a = (action, icon, tip, on = false) =>
+        `<a data-action-bme="${action}" data-id="${l.id}" data-tooltip="${tip}" class="${on ? "on" : ""}"><i class="fa-solid ${icon}"></i></a>`;
+      return `<li class="bme-tl${l === active ? " active" : ""}${l.hidden ? " is-hidden" : ""}">
+        <a class="bme-tl-pick" data-action-bme="tl-active" data-id="${l.id}" data-tooltip="New objects go on this layer">
+          <i class="fa-${l === active ? "solid" : "regular"} fa-circle-dot"></i><span>${esc(l.name)}</span></a>${badges}
+        ${a("tl-hidden", l.hidden ? "fa-eye-slash" : "fa-eye", l.hidden ? "Show (hidden only while editing)" : "Hide while editing", l.hidden)}
+        ${a("tl-locked", l.locked ? "fa-lock" : "fa-lock-open", l.locked ? "Unlock" : "Lock (Select ignores it)", l.locked)}
+        ${a("tl-up", "fa-arrow-up", "Move up")}${a("tl-down", "fa-arrow-down", "Move down")}
+        ${a("tl-edit", "fa-gear", "Layer settings")}${a("tl-delete", "fa-xmark", "Delete layer")}
+      </li>`;
+    }).join("");
+    return `<section class="bme-tilelayers">
+      <div class="bme-row"><strong>Tile layers</strong>
+        <button type="button" data-action-bme="tl-add" class="bme-tl-add"><i class="fa-solid fa-plus"></i> Layer</button></div>
+      <ul class="bme-layers">${rows}</ul>
+    </section>`;
   }
 
   #extrasHTML(tool) {
@@ -246,6 +280,10 @@ export class BattlemapPalette extends foundry.applications.api.ApplicationV2 {
             ${btn("hide", doc.hidden ? "fa-eye" : "fa-eye-slash", doc.hidden ? "Show" : "Hide")}
             ${btn("delete", "fa-trash", "Delete")}
           </div>
+          ${isTile ? `<div class="form-group bme-opt"><label>Layer</label><div class="form-fields"><select class="bme-tile-layer">
+            ${this.layer.tileLayers.map(l => `<option value="${l.id}" ${doc.flags?.[MODULE_ID]?.editor && store && l === layerOfTile(store.data, doc) ? "selected" : ""}>${esc(l.name)}</option>`).join("")}
+            ${doc.flags?.[MODULE_ID]?.editor ? "" : `<option value="" selected>(not an editor tile)</option>`}
+          </select></div></div>` : ""}
           <p class="hint">Drag to move${isTile ? " (Shift toggles snapping, linked lights follow). Shift+wheel rotates, Ctrl+wheel scales" : " (Shift snaps)"}. Double-click opens the full settings.</p>`;
       } else if (this.layer.selectedPath) {
         const p = this.layer.selectedPath;
@@ -271,7 +309,7 @@ export class BattlemapPalette extends foundry.applications.api.ApplicationV2 {
           <button type="button" data-action-bme="delete"><i class="fa-solid fa-trash"></i> ${isRoom ? "Delete room" : "Delete"}</button></div>
           ${isRoom ? `<p class="hint">Room walls follow the room shape. Draw over it with the Room tool (Erase cuts away), or use Repaint room to change its floor.</p>` : ""}`;
       }
-      return `<section class="bme-extras">${selHTML}
+      return `<section class="bme-extras">${selHTML}</section>${this.#tileLayersHTML()}<section class="bme-extras">
         <p class="hint">This map: ${d.layers.length} painted textures, ${d.rooms?.filter(r => r.mode !== "erase").length ?? 0} rooms, ${d.paths.length} paths, ${d.walls.length} walls,
         ${d.walls.reduce((n, w) => n + w.openings.length, 0)} openings.
         ${d.dirty ? "<strong>Not baked yet.</strong>" : (d.baked ? "Baked." : "")}</p>
@@ -279,6 +317,7 @@ export class BattlemapPalette extends foundry.applications.api.ApplicationV2 {
           <i class="fa-solid fa-layer-group"></i> Restore ${d.flattened.length} flattened objects as tiles</button></div>` : ""}
         </section>`;
     }
+    if (tool === "object" || tool === "scatter") return this.#tileLayersHTML();
     if (tool === "room") {
       const st = this.layer.roomWallStyle();
       const wallArt = st.src ? nameOf(st.src) : "no art";
@@ -334,6 +373,14 @@ export class BattlemapPalette extends foundry.applications.api.ApplicationV2 {
       case "layer-select": return this.selectAsset(a.dataset.src);
       case "delete": return this.layer.deleteSelected();
       case "unflatten": return this.layer.unflatten();
+      case "tl-active": return this.layer.setActiveTileLayer(id);
+      case "tl-hidden": return this.layer.toggleTileLayer(id, "hidden");
+      case "tl-locked": return this.layer.toggleTileLayer(id, "locked");
+      case "tl-up": return this.layer.moveTileLayer(id, 1);
+      case "tl-down": return this.layer.moveTileLayer(id, -1);
+      case "tl-edit": return this.layer.editTileLayer(id);
+      case "tl-delete": return this.layer.deleteTileLayer(id);
+      case "tl-add": return this.layer.addTileLayer();
       case "path-mirror": return this.layer.editPath("mirror");
       case "path-reseed": return this.layer.editPath("reseed");
       case "doc-configure": case "doc-mirror": case "doc-front": case "doc-back": case "doc-hide": case "doc-delete":

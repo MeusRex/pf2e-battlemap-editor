@@ -10,6 +10,9 @@ import { bakeMap, currentUnderlay } from "./bake.js";
 import { isAlive, lightAt, lightsOnLevel, linkedLights, tileAt, tileCorners } from "./placeables.js";
 import { openNewMapDialog } from "./newmap.js";
 import { circlePoints, outline, pieceAt, roomWalls } from "./rooms.js";
+import {
+  OCCLUSION_CHOICES, bandBase, layerOfTile, layerTileFields, layerTileUpdates, rebandUpdates, refreshTileVisibility, tileLayers
+} from "./tilelayers.js";
 
 export const DEFAULT_SETTINGS = {
   selection: { terrain: [], path: [], wall: [], room: [], door: [], object: [], scatter: [] },
@@ -20,7 +23,8 @@ export const DEFAULT_SETTINGS = {
   door: { width: 1, secret: false },
   object: { rotation: 0, scale: 1, randomRotation: false, randomMirror: false, scaleJitter: 0, snap: false, autoLight: true },
   scatter: { radius: 2, density: 0.5, spacing: 0.2, randomRotation: true, randomMirror: true, scaleJitter: 0.15, autoLight: false, variants: true },
-  browse: { groupVariants: true }
+  browse: { groupVariants: true },
+  tileLayer: "objects"
 };
 
 const UNDO_LIMIT = 30;
@@ -159,6 +163,8 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     window.addEventListener("keydown", this.#onKeyDown);
     this.tool = ui.controls.tool?.name ?? this.tool;
     this.#ensureBuilt().then(() => this.refreshVisibility());
+    this.#adoptTiles().catch(err => console.error(err));
+    refreshTileVisibility();
     EditorCatalog.load().then(() => this.palette.render({ force: true })).catch(err => {
       console.error(err);
       ui.notifications.error(err.message, { permanent: true });
@@ -174,6 +180,7 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     this.overlay?.clear();
     if (this.ghost) this.ghost.visible = false;
     this.palette.close({ animate: false });
+    refreshTileVisibility();  // hidden tile layers show again outside the editor
     if (this.store?.hasPendingChanges) this.store.save().catch(err => console.error(err));
     this.refreshVisibility();
     if (this.store?.data.dirty && !this.store.isEmpty) {
@@ -1304,7 +1311,7 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     this.rollNext();
     const { tiles, lights } = await placeObjects(canvas.scene, [{
       asset: roll.asset, x: p.x, y: p.y, rotation: s.rotation + roll.rotation, scale: s.scale * roll.scale, mirror: roll.mirror
-    }], { autoLight: s.autoLight, ppi: this.catalog?.ppi });
+    }], { autoLight: s.autoLight, ppi: this.catalog?.ppi, layer: this.activeTileLayer, mapData: this.store?.data });
     this.#pushPlacementUndo("place object", tiles, lights);
     this.#updateCursor(canvas.mousePosition);
   }
@@ -1370,7 +1377,9 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     const sc = this.#scatter;
     if (!sc || sc.flushing || !sc.queue.length) return sc?.flushing;
     const batch = sc.queue.splice(0);
-    sc.flushing = placeObjects(canvas.scene, batch, { autoLight: this.settings.scatter.autoLight, ppi: this.catalog?.ppi })
+    sc.flushing = placeObjects(canvas.scene, batch, {
+      autoLight: this.settings.scatter.autoLight, ppi: this.catalog?.ppi, layer: this.activeTileLayer, mapData: this.store?.data
+    })
       .then(({ tiles, lights }) => {
         sc.tiles.push(...tiles);
         sc.lights.push(...lights);
@@ -1390,7 +1399,9 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     while (sc.flushing || sc.queue.length) {
       if (!sc.flushing) {
         const batch = sc.queue.splice(0);
-        const res = await placeObjects(canvas.scene, batch, { autoLight: this.settings.scatter.autoLight, ppi: this.catalog?.ppi });
+        const res = await placeObjects(canvas.scene, batch, {
+          autoLight: this.settings.scatter.autoLight, ppi: this.catalog?.ppi, layer: this.activeTileLayer, mapData: this.store?.data
+        });
         sc.tiles.push(...res.tiles);
         sc.lights.push(...res.lights);
       } else await sc.flushing;
@@ -1432,7 +1443,7 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     if (best && best.type !== "path" && best.dd < G * 0.15) return best;
     const light = lightAt(pos, G * 0.3);
     if (light) return { type: "light", doc: light };
-    const tile = tileAt(pos);
+    const tile = tileAt(pos, doc => this.canPickTile(doc));
     if (tile) return { type: "tile", doc: tile };
     if (best) return best;
     const piece = d.rooms?.length ? pieceAt(d.rooms, q) : null;
@@ -1607,9 +1618,7 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
       before = { "texture.scaleX": doc.texture.scaleX };
       change = { "texture.scaleX": -(doc.texture.scaleX ?? 1) };
     } else if (action === "front" || action === "back") {
-      const sorts = scene.tiles.map(t => t.sort ?? 0);
-      before = { sort: doc.sort };
-      change = { sort: action === "front" ? Math.max(...sorts) + 1 : Math.min(...sorts) - 1 };
+      return this.#restackTile(doc, action);
     } else if (action === "hide") {
       before = { hidden: doc.hidden };
       change = { hidden: !doc.hidden };
@@ -1620,6 +1629,205 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     });
     this.palette.render();
     this.#updateCursor(canvas.mousePosition);
+  }
+
+  /** To front / to back. Editor tiles stay inside their tile layer's sort band. */
+  async #restackTile(doc, action) {
+    const scene = doc.parent;
+    const d = this.store?.data;
+    const isEditor = !!doc.flags?.[MODULE_ID]?.editor && d;
+    const peers = isEditor
+      ? scene.tiles.filter(t => t.flags?.[MODULE_ID]?.editor && layerOfTile(d, t) === layerOfTile(d, doc))
+      : scene.tiles.contents;
+    const others = peers.filter(t => t.id !== doc.id).sort((a, b) => (a.sort ?? 0) - (b.sort ?? 0));
+    const ordered = action === "front" ? [...others, doc] : [doc, ...others];
+    let updates;
+    if (isEditor) {
+      const base = bandBase(d, layerOfTile(d, doc));
+      updates = ordered.map((t, i) => ({ _id: t.id, sort: base + 1 + i })).filter(u => scene.tiles.get(u._id).sort !== u.sort);
+    } else {
+      const sorts = scene.tiles.map(t => t.sort ?? 0);
+      updates = [{ _id: doc.id, sort: action === "front" ? Math.max(...sorts) + 1 : Math.min(...sorts) - 1 }];
+    }
+    if (!updates.length) return;
+    const before = updates.map(u => ({ _id: u._id, sort: scene.tiles.get(u._id).sort }));
+    await scene.updateEmbeddedDocuments("Tile", updates);
+    this.pushUndo(`tile to ${action}`, async () => {
+      const still = before.filter(u => scene.tiles.has(u._id));
+      if (still.length) await scene.updateEmbeddedDocuments("Tile", still);
+    });
+    this.palette.render();
+    this.#updateCursor(canvas.mousePosition);
+  }
+
+  /* -------------------------------------------- */
+  /*  Tile layers                                 */
+  /* -------------------------------------------- */
+
+  /** Tile layers of the viewed map (bottom to top). */
+  get tileLayers() {
+    return this.store ? tileLayers(this.store.data) : [];
+  }
+
+  /** The layer new objects and scatter go on. */
+  get activeTileLayer() {
+    const layers = this.tileLayers;
+    return layers.find(l => l.id === this.settings.tileLayer) ?? layers.find(l => l.id === "objects") ?? layers[0] ?? null;
+  }
+
+  /** Can the Select tool pick this tile? (Not on a hidden or locked layer.) */
+  canPickTile(doc) {
+    if (!this.store || !doc.flags?.[MODULE_ID]?.editor) return true;
+    const layer = layerOfTile(this.store.data, doc);
+    return !layer?.hidden && !layer?.locked;
+  }
+
+  /** Put tiles placed before tile layers existed into their layer's band (once per map). */
+  async #adoptTiles() {
+    const store = this.store;
+    if (!store || Array.isArray(store.data.tileLayers)) return;
+    tileLayers(store.data);
+    store.touch();
+    const updates = layerTileUpdates(store.scene, store.data);
+    if (updates.length) await store.scene.updateEmbeddedDocuments("Tile", updates);
+  }
+
+  setActiveTileLayer(id) {
+    this.settings.tileLayer = id;
+    this.saveSettings();
+    this.palette.render();
+  }
+
+  /** Toggle a layer's editor-only visibility or lock. */
+  toggleTileLayer(id, key) {
+    const layer = this.tileLayers.find(l => l.id === id);
+    if (!layer || !["hidden", "locked"].includes(key)) return;
+    layer[key] = !layer[key];
+    this.store.touch();
+    if (key === "hidden") refreshTileVisibility();
+    if (this.selectedDoc && !this.canPickTile(this.selectedDoc)) this.selected = null;
+    this.palette.render();
+    this.#updateCursor(canvas.mousePosition);
+  }
+
+  /** Move a layer up (dir 1) or down (-1); its tiles move with it. */
+  async moveTileLayer(id, dir) {
+    const store = this.store;
+    const layers = this.tileLayers;
+    const i = layers.findIndex(l => l.id === id), j = i + dir;
+    if (i < 0 || j < 0 || j >= layers.length) return;
+    const oldIndex = new Map(layers.map((l, k) => [l.id, k]));
+    [layers[i], layers[j]] = [layers[j], layers[i]];
+    store.touch();
+    const updates = rebandUpdates(store.scene, store.data, oldIndex);
+    if (updates.length) await store.scene.updateEmbeddedDocuments("Tile", updates);
+    this.palette.render();
+  }
+
+  async addTileLayer() {
+    const layer = await this.#tileLayerDialog(null);
+    if (!layer) return;
+    this.tileLayers.push(layer);
+    this.store.touch();
+    this.setActiveTileLayer(layer.id);
+  }
+
+  async editTileLayer(id) {
+    const layer = this.tileLayers.find(l => l.id === id);
+    if (!layer) return;
+    const changed = await this.#tileLayerDialog(layer);
+    if (!changed) return;
+    Object.assign(layer, changed);
+    this.store.touch();
+    const updates = layerTileUpdates(this.store.scene, this.store.data, { only: layer });
+    if (updates.length) await this.store.scene.updateEmbeddedDocuments("Tile", updates);
+    this.palette.render();
+    if (updates.length) ui.notifications.info(`Battlemap Editor: updated ${updates.length} tile(s) on "${layer.name}".`);
+  }
+
+  async deleteTileLayer(id) {
+    const store = this.store;
+    const layers = this.tileLayers;
+    const layer = layers.find(l => l.id === id);
+    if (!layer || layers.length < 2) return ui.notifications.warn("Battlemap Editor: a map needs at least one tile layer.");
+    const target = layers[layers.indexOf(layer) - 1] ?? layers[layers.indexOf(layer) + 1];
+    const tiles = store.scene.tiles.filter(t => t.flags?.[MODULE_ID]?.editor && layerOfTile(store.data, t) === layer);
+    const ok = await foundry.applications.api.DialogV2.confirm({
+      window: { title: "Delete tile layer", icon: "fa-solid fa-layer-group" },
+      content: `<p>Delete the layer <strong>${foundry.utils.escapeHTML(layer.name)}</strong>?</p>
+        ${tiles.length ? `<p>Its ${tiles.length} tile(s) move to <strong>${foundry.utils.escapeHTML(target.name)}</strong>.</p>` : ""}`,
+      rejectClose: false
+    });
+    if (!ok) return;
+    const oldIndex = new Map(layers.map((l, k) => [l.id, k]));
+    if (tiles.length) {
+      await store.scene.updateEmbeddedDocuments("Tile", tiles.map(t => ({ _id: t.id, [`flags.${MODULE_ID}.layer`]: target.id })));
+    }
+    layers.splice(layers.indexOf(layer), 1);
+    store.touch();
+    const merged = new Map();
+    for (const u of [...rebandUpdates(store.scene, store.data, oldIndex), ...layerTileUpdates(store.scene, store.data, { only: target })]) {
+      merged.set(u._id, { ...(merged.get(u._id) ?? {}), ...u });
+    }
+    if (merged.size) await store.scene.updateEmbeddedDocuments("Tile", [...merged.values()]);
+    if (this.settings.tileLayer === id) this.settings.tileLayer = target.id;
+    this.palette.render();
+  }
+
+  /** Move a tile to another layer (its band, elevation and occlusion). */
+  async moveTileToLayer(doc, id) {
+    const d = this.store?.data;
+    const layer = this.tileLayers.find(l => l.id === id);
+    if (!d || !layer || !doc) return;
+    const scene = doc.parent;
+    const before = {
+      _id: doc.id, sort: doc.sort, elevation: doc.elevation,
+      occlusion: { modes: [...(doc.occlusion?.modes ?? [])], alpha: doc.occlusion?.alpha ?? 0 },
+      [`flags.${MODULE_ID}.layer`]: doc.flags?.[MODULE_ID]?.layer ?? null,
+      [`flags.${MODULE_ID}.editor`]: !!doc.flags?.[MODULE_ID]?.editor
+    };
+    let sort = bandBase(d, layer) + 1;
+    for (const t of scene.tiles) if (t.flags?.[MODULE_ID]?.editor && layerOfTile(d, t) === layer) sort = Math.max(sort, (t.sort ?? 0) + 1);
+    await scene.updateEmbeddedDocuments("Tile", [{ _id: doc.id, sort, ...layerTileFields(layer), [`flags.${MODULE_ID}.editor`]: true }]);
+    this.pushUndo("move tile to layer", async () => {
+      if (scene.tiles.has(before._id)) await scene.updateEmbeddedDocuments("Tile", [before]);
+    });
+    this.palette.render();
+    this.#updateCursor(canvas.mousePosition);
+  }
+
+  /** Create (layer = null) or edit a tile layer. Resolves to the new values, or null if cancelled. */
+  async #tileLayerDialog(layer) {
+    const esc = s => foundry.utils.escapeHTML(String(s ?? ""));
+    const l = layer ?? { name: "New layer", height: 0, occlusion: "none", fade: 0, flatten: true };
+    const units = canvas.scene?.grid.units || "ft";
+    const result = await foundry.applications.api.DialogV2.input({
+      window: { title: layer ? `Tile layer: ${layer.name}` : "New tile layer", icon: "fa-solid fa-layer-group" },
+      content: `
+        <div class="form-group"><label>Name</label><div class="form-fields"><input type="text" name="name" value="${esc(l.name)}" required></div></div>
+        <div class="form-group"><label>Height above the floor (${esc(units)})</label>
+          <div class="form-fields"><input type="number" name="height" value="${l.height}" step="1" min="0"></div>
+          <p class="hint">0 for things on the ground. Roofs and tree tops must be higher than tokens, so tokens walk under them.</p></div>
+        <div class="form-group"><label>When a token is under it</label><div class="form-fields"><select name="occlusion">
+          ${Object.entries(OCCLUSION_CHOICES).map(([k, v]) => `<option value="${k}" ${k === l.occlusion ? "selected" : ""}>${esc(v)}</option>`).join("")}
+        </select></div><p class="hint">Only applies to tiles higher than the token.</p></div>
+        <div class="form-group"><label>Opacity while faded</label>
+          <div class="form-fields"><input type="number" name="fade" value="${l.fade}" step="0.05" min="0" max="1"></div></div>
+        <div class="form-group"><label>Flatten into the bake</label>
+          <div class="form-fields"><input type="checkbox" name="flatten" ${l.flatten ? "checked" : ""}></div>
+          <p class="hint">"Flatten objects" paints these tiles into the background image. Leave off for roofs and canopies.</p></div>`,
+      ok: { label: layer ? "Save" : "Add layer", icon: "fa-solid fa-check" },
+      rejectClose: false
+    });
+    if (!result) return null;
+    const values = {
+      name: String(result.name || l.name).trim() || "Layer",
+      height: Math.max(0, Number(result.height) || 0),
+      occlusion: OCCLUSION_CHOICES[result.occlusion] ? result.occlusion : "none",
+      fade: Math.min(1, Math.max(0, Number(result.fade) || 0)),
+      flatten: !!result.flatten
+    };
+    return layer ? values : { id: foundry.utils.randomID(8), hidden: false, locked: false, ...values };
   }
 
   /** The editor path selected with the Select tool, if it still exists. */
@@ -1687,7 +1895,7 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
   async promptBake() {
     if (!this.store) return;
     if (this.store.isEmpty) return ui.notifications.warn("Battlemap Editor: nothing to bake yet.");
-    const editorTiles = canvas.scene.tiles.filter(t => t.flags?.[MODULE_ID]?.editor).length;
+    const editorTiles = canvas.scene.tiles.filter(t => t.flags?.[MODULE_ID]?.editor && layerOfTile(this.store.data, t)?.flatten !== false).length;
     const result = await foundry.applications.api.DialogV2.input({
       window: { title: "Bake battlemap", icon: "fa-solid fa-image" },
       content: `
@@ -1697,7 +1905,8 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
           <label>Flatten objects</label>
           <div class="form-fields"><input type="checkbox" name="flatten"></div>
           <p class="hint">Also paint the ${editorTiles} object tile(s) placed with the editor into the image and delete
-          the tiles. Faster for players, but the objects can no longer be moved. Lights stay.</p>
+          the tiles. Faster for players, but the objects can no longer be moved. Lights stay. Tile layers set not to flatten
+          (roofs, canopies) stay tiles.</p>
         </div>
         <div class="form-group">
           <label>Quality</label>

@@ -308,3 +308,82 @@
 .bme-new {
   flex: 1 1 100%;
 }
+
+/* Tile layers */
+.bme-tilelayers {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bme-tilelayers .bme-row {
+  justify-content: space-between;
+}
+
+.bme-tl-add {
+  flex: 0 0 auto;
+  width: auto;
+  padding: 0 8px;
+  line-height: 22px;
+}
+
+.bme-tl {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  font-size: 0.85em;
+}
+
+.bme-tl + .bme-tl {
+  border-top: 1px solid rgba(127, 127, 127, 0.25);
+}
+
+.bme-tl.active {
+  background: rgba(255, 154, 60, 0.18);
+}
+
+.bme-tl.is-hidden .bme-tl-pick span {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+
+.bme-tl a {
+  opacity: 0.65;
+  padding: 0 2px;
+}
+
+.bme-tl a:hover,
+.bme-tl a.on {
+  opacity: 1;
+}
+
+.bme-tl a.on {
+  color: var(--color-warm-2, #ff9a3c);
+}
+
+.bme-tl .bme-tl-pick {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 1;
+}
+
+.bme-tl .bme-tl-pick span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bme-tl-badge {
+  font-size: 0.8em;
+  opacity: 0.7;
+  white-space: nowrap;
+}
+
+.bme-tl > i {
+  opacity: 0.6;
+  font-size: 0.85em;
+}

@@ -1,4 +1,5 @@
 import { LIGHT_PRESETS, MODULE_ID } from "./constants.js";
+import { layerTileFields, nextSortInLayer } from "./tilelayers.js";
 
 /** Grid squares an asset covers at scale 1. */
 export function footprint(asset, ppi = 256) {
@@ -81,12 +82,18 @@ export function lightData(preset, { x, y }) {
  * Create tiles (and lights for light-source assets).
  * @param {Scene} scene
  * @param {{asset: object, x: number, y: number, rotation?: number, scale?: number, mirror?: boolean}[]} items
- * @param {{autoLight?: boolean, ppi?: number}} [o]
+ * @param {{autoLight?: boolean, ppi?: number, layer?: import("./tilelayers.js").TileLayer, mapData?: object}} [o]
+ *   layer + mapData: put the tiles on that tile layer (its sort band, elevation and occlusion)
  * @returns {Promise<{tiles: TileDocument[], lights: AmbientLightDocument[]}>}
  */
-export async function placeObjects(scene, items, { autoLight = true, ppi = 256 } = {}) {
-  let sort = nextTileSort(scene);
-  const tiles = await scene.createEmbeddedDocuments("Tile", items.map(i => tileData(i.asset, { ...i, sort: sort++, ppi })));
+export async function placeObjects(scene, items, { autoLight = true, ppi = 256, layer = null, mapData = null } = {}) {
+  const onLayer = layer && mapData;
+  let sort = onLayer ? nextSortInLayer(scene, mapData, layer) : nextTileSort(scene);
+  const extra = onLayer ? foundry.utils.expandObject(layerTileFields(layer)) : null;
+  const tiles = await scene.createEmbeddedDocuments("Tile", items.map(i => {
+    const data = tileData(i.asset, { ...i, sort: sort++, ppi });
+    return extra ? foundry.utils.mergeObject(data, foundry.utils.deepClone(extra)) : data;
+  }));
   const lights = [];
   if (autoLight) {
     const data = [];

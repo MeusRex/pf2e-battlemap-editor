@@ -3,6 +3,7 @@ import { EditorCatalog } from "./catalog.js";
 import { BattlemapLayer } from "./layer.js";
 import { openNewMapDialog } from "./newmap.js";
 import { registerLightCleanup } from "./objects.js";
+import { registerTileLayerHooks } from "./tilelayers.js";
 import { bakeMap } from "./bake.js";
 
 Hooks.once("init", () => {
@@ -51,6 +52,7 @@ Hooks.once("init", () => {
 
   CONFIG.Canvas.layers[LAYER_NAME] = { layerClass: BattlemapLayer, group: "interface" };
   registerLightCleanup();
+  registerTileLayerHooks();
 });
 
 Hooks.once("ready", () => {

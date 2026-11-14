@@ -44,6 +44,20 @@ Foundry documents; edit them with the Tile and Lighting tools.
 
 You can also paint on top of a scene that already has a background image: the image is kept underneath.
 
+## Tile layers
+
+Objects and scatter go on the active **tile layer** (Objects, Scatter and Select palettes). The defaults are
+*Floor details*, *Objects*, *Roof* and *Canopy*:
+
+- A layer's tiles always stay above the layers below it; *To front/back* works within the layer.
+- *Roof* and *Canopy* sit above token height (+10 and +20 by default) and fade when a token walks under them. This is
+  Foundry's own tile occlusion, so it works for players without the editor. The gear button sets a layer's name,
+  height, occlusion (fade, reveal around the token, reveal what the token sees), faded opacity and whether
+  *Flatten objects* may paint it into the bake (off for roofs and canopies).
+- The eye hides a layer while you edit (players are unaffected; it shows again when you leave the editor). The lock
+  makes Select ignore it, e.g. to work under a roof.
+- Select → *Layer* moves a tile to another layer. Tiles placed before layers existed are put on *Objects*.
+
 ## Notes
 
 - FA terrain textures carry a height map in their alpha channel. By default the editor ignores it and transitions

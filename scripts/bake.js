@@ -1,5 +1,6 @@
 import { MODULE_ID } from "./constants.js";
 import { canvasToBlob, uploadBlob, uploadDir } from "./store.js";
+import { layerOfTile } from "./tilelayers.js";
 
 const CHUNK = 4096;
 const MAX_SIDE = 16384;
@@ -51,7 +52,10 @@ export async function bakeMap(layer, { flatten = false, quality = 0.9 } = {}) {
   await renderer.ready();
 
   // Flattened objects are kept in the map data, so every later bake still contains them.
-  const tiles = flatten ? scene.tiles.filter(t => t.flags?.[MODULE_ID]?.editor && !t.hidden) : [];
+  // Only layers marked "flatten": roofs and canopies must stay tiles to fade over tokens.
+  const tiles = flatten
+    ? scene.tiles.filter(t => t.flags?.[MODULE_ID]?.editor && !t.hidden && layerOfTile(store.data, t)?.flatten !== false)
+    : [];
   const flattenedBefore = store.data.flattened.length;
   if (tiles.length) {
     store.data.flattened.push(...tiles.map(t => {

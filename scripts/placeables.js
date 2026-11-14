@@ -40,9 +40,10 @@ function insidePolygon(pt, poly) {
   return inside;
 }
 
-/** Topmost tile under a canvas point; transparent pixels do not count. */
-export function tileAt(pos) {
+/** Topmost tile under a canvas point (only tiles passing filter); transparent pixels do not count. */
+export function tileAt(pos, filter = null) {
   for (const doc of tilesTopDown()) {
+    if (filter && !filter(doc)) continue;
     const mesh = doc.object?.mesh;
     let hit;
     try {
