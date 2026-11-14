@@ -13,7 +13,7 @@ import { circlePoints, outline, pieceAt, roomWalls } from "./rooms.js";
 
 export const DEFAULT_SETTINGS = {
   selection: { terrain: [], path: [], wall: [], room: [], door: [], object: [], scatter: [] },
-  brush: { size: 3, hardness: 0.4, opacity: 0.8, erase: false },
+  brush: { size: 3, hardness: 0.4, opacity: 0.8, flow: 1, erase: false },
   path: { width: 1, smooth: true, flip: false, snap: false, rough: 0 },
   wall: { type: "normal", width: 1, snap: true },
   room: { shape: "rect", mode: "merge", snap: true, erase: false, repaintWalls: false },
@@ -776,7 +776,9 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
       copy.getContext("2d").drawImage(c, 0, 0);
       snapshots.set(t.layer.id, copy);
     }
-    this.#stroke = { targets, snapshots, last: null, created: created ? layer : null };
+    // Dabs go into a per-stroke buffer; the masks show snapshot + buffer × opacity, so one stroke never exceeds
+    // the opacity however often it crosses itself. Flow sets how fast the buffer fills.
+    this.#stroke = { targets, snapshots, buffer: this.store.newMask(), last: null, created: created ? layer : null };
     if (created) this.renderer.buildTerrain().then(() => this.refreshVisibility());
     return true;
   }
@@ -792,23 +794,44 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     const from = st.last ?? p;
     const spacing = Math.max(1, radius * 0.18);
     const steps = Math.max(1, Math.ceil(dist(from, p) / spacing));
-    const alpha = Math.min(1, b.opacity * 0.45);
+    // About 2r/spacing dabs cover each point of a straight pass. Choose the per-dab alpha so that one pass fills
+    // the buffer to `flow`; scrubbing over the same spot keeps building towards 1 (= the opacity cap).
+    const flow = Math.min(1, Math.max(0.01, b.flow ?? 1));
+    const dabAlpha = flow >= 0.999 ? 1 : 1 - Math.pow(1 - flow, spacing / (2 * radius));
+    const opacity = Math.min(1, Math.max(0.01, b.opacity));
+
+    const buf = st.buffer;
+    const bctx = buf.getContext("2d");
+    bctx.globalAlpha = dabAlpha;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let i = st.last ? 1 : 0; i <= steps; i++) {
+      const x = from[0] + ((p[0] - from[0]) * i) / steps - brush.width / 2;
+      const y = from[1] + ((p[1] - from[1]) * i) / steps - brush.height / 2;
+      bctx.drawImage(brush, x, y);
+      x0 = Math.min(x0, x); y0 = Math.min(y0, y);
+      x1 = Math.max(x1, x + brush.width); y1 = Math.max(y1, y + brush.height);
+    }
+    bctx.globalAlpha = 1;
+    st.last = p;
+
+    // Recomposite only the area the new dabs touched: snapshot, then the stroke buffer at the stroke's opacity.
+    const rx = Math.max(0, Math.floor(x0) - 1), ry = Math.max(0, Math.floor(y0) - 1);
+    const rw = Math.min(buf.width, Math.ceil(x1) + 1) - rx, rh = Math.min(buf.height, Math.ceil(y1) + 1) - ry;
+    if (rw <= 0 || rh <= 0) return;
     for (const t of st.targets) {
       const c = this.store.masks.get(t.layer.id);
-      if (!c) continue;
+      const snap = st.snapshots.get(t.layer.id);
+      if (!c || !snap) continue;
       const ctx = c.getContext("2d");
       ctx.save();
+      ctx.clearRect(rx, ry, rw, rh);
+      ctx.drawImage(snap, rx, ry, rw, rh, rx, ry, rw, rh);
       ctx.globalCompositeOperation = t.mode === "paint" ? "source-over" : "destination-out";
-      ctx.globalAlpha = alpha;
-      for (let i = st.last ? 1 : 0; i <= steps; i++) {
-        const x = from[0] + ((p[0] - from[0]) * i) / steps;
-        const y = from[1] + ((p[1] - from[1]) * i) / steps;
-        ctx.drawImage(brush, x - brush.width / 2, y - brush.height / 2);
-      }
+      ctx.globalAlpha = opacity;
+      ctx.drawImage(buf, rx, ry, rw, rh, rx, ry, rw, rh);
       ctx.restore();
       this.renderer.updateMask(t.layer.id);
     }
-    st.last = p;
   }
 
   #endStroke() {

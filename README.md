@@ -28,7 +28,7 @@ don't publish them.
 
 | Tool | What it does |
 |---|---|
-| Paint terrain | The first texture you click fills the map; then drag to paint others on top. Alt-drag erases. Ctrl/Shift+wheel: brush size. Layers can be reordered or removed in the palette; click a layer to select its texture again. |
+| Paint terrain | The first texture you click fills the map; then drag to paint others on top. Alt-drag erases. Ctrl/Shift+wheel: brush size. *Opacity* is the most one stroke can add, however often you cross it; *Flow* is how much one pass adds (low flow: scrub to build up). Another stroke adds on top. Layers can be reordered or removed in the palette; click a layer to select its texture again. |
 | Paths | Click points; double-click, right-click or Enter finishes. Backspace removes the last point, Esc cancels. Roads, rivers, cliffs, fences. *Roughness* adds a natural wobble to the line (cliff edges, riverbanks); each path gets its own noise. |
 | Walls | Click grid points (Shift: free), click the first point to close a room. Draws the wall art and creates Foundry walls (normal, terrain, invisible, ethereal, or art only). With no art selected you get Foundry walls only. |
 | Rooms | Floor and walls in one go. Pick a floor texture, then drag a rectangle or circle, or click a polygon; Ctrl+click adds a curve point and the wall bends through it (an apse, a round tower). *Merge* opens into rooms it overlaps or touches (dungeons); *Separate* keeps a wall where it meets other rooms (houses, a closet inside a hall). Alt or *Erase* cuts away. *Repaint room* swaps a room's floor (and optionally its walls). Walls use the Wall tool's art, type and thickness, and doors stay in place when rooms change. |

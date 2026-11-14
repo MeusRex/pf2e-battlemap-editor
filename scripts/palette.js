@@ -8,7 +8,7 @@ const esc = s => foundry.utils.escapeHTML(String(s ?? ""));
 const TOOL_INFO = {
   terrain: {
     title: "Paint terrain", icon: "fa-solid fa-paintbrush",
-    hint: "The first texture you click fills the map. Then drag to paint others on top. Alt-drag erases back to the base. Ctrl/Shift+wheel changes brush size."
+    hint: "The first texture you click fills the map. Then drag to paint others on top. Alt-drag erases back to the base. Ctrl/Shift+wheel changes brush size. One stroke never goes above Opacity, however often you cross it; Flow sets how quickly it gets there (low flow: scrub to build up)."
   },
   path: {
     title: "Paths", icon: "fa-solid fa-route",
@@ -45,7 +45,8 @@ const OPTIONS = {
   terrain: [
     ["brush.size", "Brush size (squares)", "range", { min: 0.25, max: 30, step: 0.25 }],
     ["brush.hardness", "Hardness", "range", { min: 0, max: 1, step: 0.05 }],
-    ["brush.opacity", "Opacity", "range", { min: 0.05, max: 1, step: 0.05 }],
+    ["brush.opacity", "Opacity (max per stroke)", "range", { min: 0.05, max: 1, step: 0.05 }],
+    ["brush.flow", "Flow (build-up per pass)", "range", { min: 0.05, max: 1, step: 0.05 }],
     ["brush.erase", "Erase", "checkbox"]
   ],
   path: [
