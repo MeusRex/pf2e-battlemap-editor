@@ -26,19 +26,6 @@ export const DEFAULT_SETTINGS = {
 const UNDO_LIMIT = 30;
 const POLY_TOOLS = new Set(["path", "wall", "room"]);
 
-/**
- * Foundry ignores all keyboard shortcuts (Ctrl+Z, Delete, Esc) while an input, select or checkbox has focus, and
- * clicking the canvas does not take focus away from them. Drop focus from palette controls when the map is used.
- * @param {boolean} all  also blur text fields (on clicks; not on mere mouse movement while typing a search)
- */
-function releasePaletteFocus(all) {
-  const el = document.activeElement;
-  if (!(el instanceof HTMLElement) || !el.closest("#bme-palette")) return;
-  const text = el.tagName === "TEXTAREA" || (el.tagName === "INPUT" && ["text", "search", "number"].includes(el.type));
-  if (text && !all) return;
-  el.blur();
-}
-
 function isTyping(event) {
   const el = event.target;
   return el instanceof HTMLElement && (el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName));
@@ -305,8 +292,10 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     if (this.#draft?.points.length) {
       this.#draft.points.pop();
       this.#draft.curves?.pop();
-      if (!this.#draft.points.length) this.#draft = null;
+      const left = this.#draft.points.length;
+      if (!left) this.#draft = null;
       this.#updateCursor(canvas.mousePosition);
+      ui.notifications.info(left ? `Ctrl+Z: removed the last point (${left} left).` : "Ctrl+Z: removed the last point; drawing cancelled.");
       return true;
     }
     const entry = this.undoStack.pop();
@@ -355,7 +344,24 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
   }
 
   #handleKeyDown(event) {
-    if (!this.active || isTyping(event) || event.repeat) return;
+    if (!this.active || event.repeat) return;
+    // Foundry skips its Ctrl+Z shortcut while a form control has focus. Palette controls (not text fields) hand
+    // the key to the editor; anywhere else, say why nothing happened.
+    console.log(event.code + " " + event.ctrlKey + " " + event.repeat);
+    if (event.code === "KeyZ" && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && game.keyboard?.hasFocus) {
+      const el = document.activeElement;
+      const text = el?.tagName === "TEXTAREA" || el?.isContentEditable
+        || (el?.tagName === "INPUT" && ["text", "search", "number"].includes(el.type));
+      if (el?.closest?.("#bme-palette") && !text) {
+        event.preventDefault();
+        el.blur();
+        this._onUndoKey(event);
+      } else {
+        ui.notifications.info("Ctrl+Z went to the text field you are typing in, not the map. Click the map, then press Ctrl+Z again.");
+      }
+      return;
+    }
+    if (isTyping(event)) return;
     if (event.key === "Enter" && this.#draft) {
       event.preventDefault();
       this.#finishDraft();
@@ -374,13 +380,11 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
 
   #onMouseMove(pos) {
     if (!this.active) return;
-    releasePaletteFocus(false);
     this.#updateCursor(pos);
   }
 
   /** @override */
   _onClickLeft(event) {
-    releasePaletteFocus(true);
     const pos = canvas.mousePosition;
     switch (this.tool) {
       case "terrain":
@@ -432,7 +436,6 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
 
   /** @override */
   _onClickRight(event) {
-    releasePaletteFocus(true);
     if (POLY_TOOLS.has(this.tool) && this.#draft) {
       if (this.#draft.points.length >= 2) this.#finishDraft();
       else this.#draft = null;
