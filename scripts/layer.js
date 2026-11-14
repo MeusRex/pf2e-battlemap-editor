@@ -26,6 +26,19 @@ export const DEFAULT_SETTINGS = {
 const UNDO_LIMIT = 30;
 const POLY_TOOLS = new Set(["path", "wall", "room"]);
 
+/**
+ * Foundry ignores all keyboard shortcuts (Ctrl+Z, Delete, Esc) while an input, select or checkbox has focus, and
+ * clicking the canvas does not take focus away from them. Drop focus from palette controls when the map is used.
+ * @param {boolean} all  also blur text fields (on clicks; not on mere mouse movement while typing a search)
+ */
+function releasePaletteFocus(all) {
+  const el = document.activeElement;
+  if (!(el instanceof HTMLElement) || !el.closest("#bme-palette")) return;
+  const text = el.tagName === "TEXTAREA" || (el.tagName === "INPUT" && ["text", "search", "number"].includes(el.type));
+  if (text && !all) return;
+  el.blur();
+}
+
 function isTyping(event) {
   const el = event.target;
   return el instanceof HTMLElement && (el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName));
@@ -361,11 +374,13 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
 
   #onMouseMove(pos) {
     if (!this.active) return;
+    releasePaletteFocus(false);
     this.#updateCursor(pos);
   }
 
   /** @override */
   _onClickLeft(event) {
+    releasePaletteFocus(true);
     const pos = canvas.mousePosition;
     switch (this.tool) {
       case "terrain":
@@ -417,6 +432,7 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
 
   /** @override */
   _onClickRight(event) {
+    releasePaletteFocus(true);
     if (POLY_TOOLS.has(this.tool) && this.#draft) {
       if (this.#draft.points.length >= 2) this.#finishDraft();
       else this.#draft = null;

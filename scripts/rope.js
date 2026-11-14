@@ -40,9 +40,6 @@ export function makeRope(texture, pts, { scale = 1, closed = false, flip = false
   const half = (texture.height * scale) / 2;
   const repeat = texture.width * scale;
   const cum = cumulative(points);
-  const verts = new Float32Array(n * 4);
-  const uvs = new Float32Array(n * 4);
-  const idx = new Uint16Array((n - 1) * 6);
   const side = flip ? -1 : 1;
 
   const normal = (a, b) => {
@@ -50,6 +47,8 @@ export function makeRope(texture, pts, { scale = 1, closed = false, flip = false
     return [-dy / l, dx / l];
   };
 
+  // Mitred offset of each point (outer side; the inner side is the negation).
+  const offs = new Array(n);
   for (let i = 0; i < n; i++) {
     let nx, ny, miter = 1;
     const prev = i > 0 ? points[i - 1] : (isRing ? points[n - 2] : null);
@@ -69,13 +68,28 @@ export function makeRope(texture, pts, { scale = 1, closed = false, flip = false
     } else {
       [nx, ny] = prev ? normal(prev, p) : normal(p, next);
     }
-    const ox = nx * half * miter * side, oy = ny * half * miter * side;
-    verts.set([p[0] + ox, p[1] + oy, p[0] - ox, p[1] - oy], i * 4);
-    const u = cum[i] / repeat;
-    uvs.set([u, 0, u, 1], i * 4);
+    offs[i] = [nx * half * miter * side, ny * half * miter * side];
   }
-  for (let i = 0; i < n - 1; i++) {
-    const k = i * 2;
+
+  // One quad per segment with its own vertices. Each vertex's u is its distance along that segment, so the
+  // texture maps affinely onto the mitred trapezoid: no shear along the quad's diagonal, and the pattern
+  // meets the next segment cleanly on the mitre line.
+  const segs = n - 1;
+  const verts = new Float32Array(segs * 8);
+  const uvs = new Float32Array(segs * 8);
+  const idx = new Uint16Array(segs * 6);
+  for (let i = 0; i < segs; i++) {
+    const a = points[i], b = points[i + 1];
+    const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1;
+    const ux = dx / l, uy = dy / l;
+    const oa = offs[i], ob = offs[i + 1];
+    const along = o => o[0] * ux + o[1] * uy;
+    verts.set([a[0] + oa[0], a[1] + oa[1], a[0] - oa[0], a[1] - oa[1], b[0] + ob[0], b[1] + ob[1], b[0] - ob[0], b[1] - ob[1]], i * 8);
+    uvs.set([
+      (cum[i] + along(oa)) / repeat, 0, (cum[i] - along(oa)) / repeat, 1,
+      (cum[i + 1] + along(ob)) / repeat, 0, (cum[i + 1] - along(ob)) / repeat, 1
+    ], i * 8);
+    const k = i * 4;
     idx.set([k, k + 1, k + 2, k + 2, k + 1, k + 3], i * 6);
   }
 
