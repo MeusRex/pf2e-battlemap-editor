@@ -39,7 +39,8 @@ import { FLAG_MAP, MAP_VERSION, MASK_RES, MODULE_ID } from "./constants.js";
  * @property {{src: string}|null} base
  * @property {TerrainLayer[]} layers
  * @property {PathEntry[]} paths
- * @property {WallEntry[]} walls
+ * @property {WallEntry[]} walls       includes walls generated from rooms (marked with `room`: the piece id)
+ * @property {import("./rooms.js").RoomPiece[]} rooms
  * @property {object[]} flattened     tile data of objects painted into the bake (restorable as tiles)
  * @property {string|null} underlay   background that was there before the first bake
  * @property {{src: string, at: number}|null} baked
@@ -49,7 +50,7 @@ import { FLAG_MAP, MAP_VERSION, MASK_RES, MODULE_ID } from "./constants.js";
 /** @returns {MapData} */
 export function emptyMap() {
   return {
-    version: MAP_VERSION, maskRes: MASK_RES, base: null, layers: [], paths: [], walls: [], flattened: [],
+    version: MAP_VERSION, maskRes: MASK_RES, base: null, layers: [], paths: [], walls: [], rooms: [], flattened: [],
     underlay: null, baked: null, dirty: false
   };
 }
@@ -122,7 +123,7 @@ export class MapStore {
 
   get isEmpty() {
     const d = this.data;
-    return !d.base && !d.layers.length && !d.paths.length && !d.walls.length && !d.flattened.length;
+    return !d.base && !d.layers.length && !d.paths.length && !d.walls.length && !d.rooms?.length && !d.flattened.length;
   }
 
   /** Create a blank mask canvas. */

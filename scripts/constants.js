@@ -14,6 +14,7 @@ export const TOOL_KINDS = {
   terrain: ["terrain"],
   path: ["path"],
   wall: ["wall", "path"],
+  room: ["terrain"],
   door: ["portal"],
   object: ["object"],
   scatter: ["object"],

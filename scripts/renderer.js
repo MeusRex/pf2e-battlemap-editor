@@ -1,6 +1,7 @@
 import { MODULE_ID } from "./constants.js";
 import { cumulative, pathPoints, pointAt, ringPoints, smooth, splitByRanges } from "./geometry.js";
 import { makeRope } from "./rope.js";
+import { roomFloors } from "./rooms.js";
 
 /** Texture px -> scene px for Dungeondraft art (authored at 256 px per square). */
 export function artScale(gridSize, ppi = 256) {
@@ -160,6 +161,7 @@ export class MapRenderer {
     this.root.eventMode = "none";
     this.underlay = this.root.addChild(new PIXI.Container());
     this.terrain = this.root.addChild(new PIXI.Container());
+    this.floors = this.root.addChild(new PIXI.Container());
     this.paths = this.root.addChild(new PIXI.Container());
     this.walls = this.root.addChild(new PIXI.Container());
     this.flat = this.root.addChild(new PIXI.Container());
@@ -279,7 +281,7 @@ export class MapRenderer {
     }
   }
 
-  /** Paths, wall art and window art. */
+  /** Room floors, paths, wall art and window art. */
   async buildVectors() {
     const id = ++this.#vectorBuild;
     const d = this.store.data;
@@ -290,8 +292,32 @@ export class MapRenderer {
       ...d.walls.flatMap(w => w.openings.filter(o => o.kind === "window").map(o => o.src))
     ].filter(Boolean));
     const textures = new Map();
-    await Promise.all([...srcs].map(async s => textures.set(s, await tex(s))));
+    const floors = roomFloors(d.rooms ?? []);
+    const floorTextures = new Map();
+    await Promise.all([
+      ...[...srcs].map(async s => textures.set(s, await tex(s))),
+      ...[...new Set(floors.map(f => f.floor))].map(async s => floorTextures.set(s, await opaqueTexture(s)))
+    ]);
     if (id !== this.#vectorBuild || this.root.destroyed) return;
+
+    // Floors: one textured polygon set per room piece, aligned to the same texture grid as the terrain.
+    this.#destroyChildren(this.floors);
+    for (const f of floors) {
+      const t = floorTextures.get(f.floor);
+      if (!t) continue;
+      const g = new PIXI.Graphics();
+      g.beginTextureFill({ texture: t, matrix: new PIXI.Matrix().scale(scale, scale) });
+      for (const c of f.comps) {
+        g.drawPolygon(c.outer.flat());
+        for (const h of c.holes) {
+          g.beginHole();
+          g.drawPolygon(h.flat());
+          g.endHole();
+        }
+      }
+      g.endFill();
+      this.floors.addChild(g);
+    }
 
     this.#destroyChildren(this.paths);
     this.#destroyChildren(this.walls);

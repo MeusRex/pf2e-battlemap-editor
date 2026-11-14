@@ -9,12 +9,14 @@ import { BattlemapPalette } from "./palette.js";
 import { bakeMap, currentUnderlay } from "./bake.js";
 import { isAlive, lightAt, lightsOnLevel, linkedLights, tileAt, tileCorners } from "./placeables.js";
 import { openNewMapDialog } from "./newmap.js";
+import { circlePoints, outline, pieceAt, roomWalls } from "./rooms.js";
 
 export const DEFAULT_SETTINGS = {
-  selection: { terrain: [], path: [], wall: [], door: [], object: [], scatter: [] },
+  selection: { terrain: [], path: [], wall: [], room: [], door: [], object: [], scatter: [] },
   brush: { size: 3, hardness: 0.4, opacity: 0.8, erase: false },
   path: { width: 1, smooth: true, flip: false, snap: false, rough: 0 },
   wall: { type: "normal", width: 1, snap: true },
+  room: { shape: "rect", mode: "merge", snap: true, erase: false, repaintWalls: false },
   door: { width: 1, secret: false },
   object: { rotation: 0, scale: 1, randomRotation: false, randomMirror: false, scaleJitter: 0, snap: false, autoLight: true },
   scatter: { radius: 2, density: 0.5, spacing: 0.2, randomRotation: true, randomMirror: true, scaleJitter: 0.15, autoLight: false, variants: true },
@@ -22,7 +24,7 @@ export const DEFAULT_SETTINGS = {
 };
 
 const UNDO_LIMIT = 30;
-const POLY_TOOLS = new Set(["path", "wall"]);
+const POLY_TOOLS = new Set(["path", "wall", "room"]);
 
 function isTyping(event) {
   const el = event.target;
@@ -50,7 +52,8 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
   }
 
   #onKeyDown;
-  #draft = null;          // polyline being drawn: {tool, points}
+  #draft = null;          // polyline being drawn: {tool, points, curves}
+  #roomDrag = null;       // rectangle or circle room being dragged: {shape, start, erase}
   #stroke = null;         // terrain stroke in progress
   #scatter = null;        // scatter stroke in progress
   #move = null;           // tile or light being dragged with the Select tool
@@ -86,6 +89,7 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
         terrain: t("terrain", 1, "Paint terrain (Alt: erase, Ctrl/Shift+wheel: brush size)", "fa-solid fa-paintbrush"),
         path: t("path", 2, "Draw path: roads, rivers, cliffs (click points, double-click/right-click/Enter to finish)", "fa-solid fa-route"),
         wall: t("wall", 3, "Draw walls with art and Foundry walls (click points, double-click/right-click/Enter to finish)", "fa-solid fa-block-brick"),
+        room: t("room", 3.5, "Draw rooms: floor and walls together (drag a rectangle or circle, or click a polygon; Ctrl+click adds a curve)", "fa-solid fa-vector-square"),
         door: t("door", 4, "Place doors and windows on editor walls", "fa-solid fa-door-open"),
         object: t("object", 5, "Place objects (Shift+wheel: rotate, Ctrl+wheel: scale)", "fa-solid fa-chess-rook"),
         scatter: t("scatter", 6, "Scatter brush: drag to sprinkle the selected objects", "fa-solid fa-seedling"),
@@ -287,6 +291,7 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
   _onUndoKey(event) {
     if (this.#draft?.points.length) {
       this.#draft.points.pop();
+      this.#draft.curves?.pop();
       if (!this.#draft.points.length) this.#draft = null;
       this.#updateCursor(canvas.mousePosition);
       return true;
@@ -308,6 +313,11 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
 
   /** @override */
   _onDismissKey(event) {
+    if (this.#roomDrag) {
+      this.#roomDrag = null;
+      this.#updateCursor(canvas.mousePosition);
+      return true;
+    }
     if (this.#draft) {
       this.#draft = null;
       this.#updateCursor(canvas.mousePosition);
@@ -339,6 +349,7 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     } else if (event.key === "Backspace" && this.#draft) {
       event.preventDefault();
       this.#draft.points.pop();
+      this.#draft.curves?.pop();
       if (!this.#draft.points.length) this.#draft = null;
       this.#updateCursor(canvas.mousePosition);
     }
@@ -366,6 +377,9 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
         break;
       case "path": case "wall":
         this.#addDraftPoint(pos, event);
+        break;
+      case "room":
+        this.#roomClick(pos, event);
         break;
       case "door":
         this.#placeOpening(pos);
@@ -418,6 +432,7 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
       const origin = event.interactionData?.origin ?? canvas.mousePosition;
       return this.#hitTest(origin)?.doc === doc;
     }
+    if (this.tool === "room") return !!this.#roomDrag;
     return this.tool === "terrain" || this.tool === "scatter";
   }
 
@@ -461,6 +476,7 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     if (this.#stroke) this.#endStroke();
     if (this.#scatter) this.#endScatter();
     if (this.#move) this.#endMove(true);
+    if (this.#roomDrag) this.#finishRoomDrag();
   }
 
   /** @override */
@@ -468,6 +484,7 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     if (this.#stroke) this.#endStroke();
     if (this.#scatter) this.#endScatter();
     if (this.#move) this.#endMove(false);
+    if (this.#roomDrag) this.#finishRoomDrag();
   }
 
   /** @override */
@@ -508,7 +525,10 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     const shift = event?.shiftKey ?? game.keyboard.isModifierActive("SHIFT");
     const s = this.settings[this.tool] ?? {};
     const wantSnap = s.snap ? !shift : shift;
-    return wantSnap ? this.#snap(pos, this.tool === "wall" ? "vertex" : "any") : pos;
+    if (!wantSnap) return pos;
+    // Room corners go on grid vertices; curve points (Ctrl) may also use centres and edge midpoints.
+    const curve = this.tool === "room" && (event?.ctrlKey ?? game.keyboard.isModifierActive("CONTROL"));
+    return this.#snap(pos, (this.tool === "wall" || this.tool === "room") && !curve ? "vertex" : "any");
   }
 
   #updateCursor(pos) {
@@ -550,6 +570,9 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
         }
         break;
       }
+      case "room":
+        this.#drawRoomPreview(g, pos);
+        break;
       case "door": {
         const hit = this.#openingAt(pos);
         this.#drawWallOutlines(g, 0x66aaff, 0.35);
@@ -610,6 +633,11 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     }
     if (hit.type === "light") {
       g.lineStyle(3, color, alpha).drawCircle(hit.doc.x, hit.doc.y, this.G * 0.22);
+      return;
+    }
+    if (hit.type === "room") {
+      const pts = hit.piece.ring;
+      g.lineStyle(4, color, alpha).drawPolygon(pts.flatMap(p => [p[0] + o.x, p[1] + o.y]));
       return;
     }
     if (hit.type === "opening") {
@@ -842,14 +870,18 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     if (!this.store) return;
     const p = this.#draftPoint(pos, event);
     const q = this.toLocal(p);
-    if (!this.#draft) this.#draft = { tool: this.tool, points: [] };
+    if (!this.#draft) {
+      const erase = this.tool === "room" && (this.settings.room.erase || !!event?.altKey);
+      this.#draft = { tool: this.tool, points: [], curves: [], erase };
+    }
     const pts = this.#draft.points;
     if (pts.length && dist(pts[pts.length - 1], q) < 2) return; // double-click repeats the last point
-    if (this.tool === "wall" && pts.length >= 3 && dist(q, pts[0]) < this.G * 0.3) {
+    if ((this.tool === "wall" || this.tool === "room") && pts.length >= 3 && dist(q, pts[0]) < this.G * 0.3) {
       this.#finishDraft({ closed: true });
       return;
     }
     pts.push(q);
+    this.#draft.curves.push(this.tool === "room" && !!event?.ctrlKey);
     this.#updateCursor(pos);
   }
 
@@ -860,6 +892,11 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     if (!draft || draft.points.length < 2 || !this.store) return;
     const d = this.store.data;
     const store = this.store;
+    if (draft.tool === "room") {
+      if (draft.points.length < 3) return;
+      const ring = outline(draft.points, draft.curves, true, this.G / 4);
+      return this.#addRoom(ring, draft.erase);
+    }
     if (draft.tool === "path") {
       const src = this.selection("path")[0]?.src;
       if (!src) return ui.notifications.warn("Battlemap Editor: pick a path texture in the palette first.");
@@ -894,6 +931,205 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
         await this.renderer?.buildVectors();
       });
     }
+  }
+
+  /* -------------------------------------------- */
+  /*  Rooms                                       */
+  /* -------------------------------------------- */
+
+  /** Wall style for new rooms: the Wall tool's art, type and thickness. */
+  roomWallStyle() {
+    const s = this.settings.wall;
+    return { src: this.selection("wall")[0]?.src ?? null, type: s.type, width: s.width };
+  }
+
+  #roomClick(pos, event) {
+    if (!this.store) return;
+    const s = this.settings.room;
+    if (s.shape === "repaint") return this.#repaintRoom(pos);
+    if (s.shape === "poly") return this.#addDraftPoint(pos, event);
+    // Rectangle and circle: pointer-down starts the shape, releasing the button finishes it.
+    const p = this.#draftPoint(pos, event);
+    this.#roomDrag = { shape: s.shape, start: this.toLocal(p), erase: s.erase || !!event?.altKey };
+    window.addEventListener("pointerup", () => {
+      if (this.#roomDrag) this.#finishRoomDrag();
+    }, { once: true });
+  }
+
+  /** Outline of the rectangle or circle being dragged, ending at canvas point cur. */
+  #roomDragRing(cur, drag = this.#roomDrag) {
+    if (!drag) return null;
+    const G = this.G;
+    const a = drag.start, b = this.toLocal(cur);
+    if (drag.shape === "circle") {
+      let r = dist(a, b);
+      const shift = game.keyboard.isModifierActive("SHIFT");
+      if (this.settings.room.snap ? !shift : shift) r = Math.max(G / 2, Math.round(r / (G / 2)) * (G / 2));
+      return r >= G / 4 ? circlePoints(a[0], a[1], r, G / 4) : null;
+    }
+    if (Math.abs(b[0] - a[0]) < G / 4 || Math.abs(b[1] - a[1]) < G / 4) return null;
+    return [[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]]];
+  }
+
+  #finishRoomDrag() {
+    const drag = this.#roomDrag;
+    this.#roomDrag = null;
+    const ring = this.#roomDragRing(this.#draftPoint(canvas.mousePosition), drag);
+    this.#updateCursor(canvas.mousePosition);
+    if (ring) this.#addRoom(ring, drag.erase);
+  }
+
+  #drawRoomPreview(g, pos) {
+    const o = this.origin, G = this.G;
+    const s = this.settings.room;
+    const d = this.store?.data;
+    if (!d) return;
+    const toCanvas = pts => pts.flatMap(p => [p[0] + o.x, p[1] + o.y]);
+    this.#drawWallOutlines(g, 0x66aaff, 0.3);
+    if (s.shape === "repaint" && !this.#draft) {
+      const piece = d.rooms?.length ? pieceAt(d.rooms, this.toLocal(pos)) : null;
+      if (piece) g.lineStyle(3, 0x7dff8a, 0.9).beginFill(0x7dff8a, 0.15).drawPolygon(toCanvas(piece.ring)).endFill();
+      return;
+    }
+    const cur = this.#draftPoint(pos);
+    const ctrl = game.keyboard.isModifierActive("CONTROL");
+    const draft = this.#draft?.tool === "room" ? this.#draft : null;
+    const erase = this.#roomDrag?.erase ?? draft?.erase ?? (s.erase || game.keyboard.isModifierActive("ALT"));
+    const color = erase ? 0xff5555 : 0x7dff8a;
+    g.lineStyle(1, 0xffffff, 0.8).drawCircle(cur.x, cur.y, ctrl && s.shape === "poly" ? 7 : 5);
+    let ring = null;
+    if (this.#roomDrag) ring = this.#roomDragRing(cur);
+    else if (draft) ring = outline([...draft.points, this.toLocal(cur)], [...draft.curves, ctrl], true, G / 4);
+    if (ring && ring.length >= 2) g.lineStyle(2, color, 0.95).beginFill(color, 0.12).drawPolygon(toCanvas(ring)).endFill();
+    if (draft) {
+      g.lineStyle(0);
+      draft.points.forEach((q, i) => {
+        g.beginFill(draft.curves[i] ? 0x66ccff : color, 0.95).drawCircle(q[0] + o.x, q[1] + o.y, draft.curves[i] ? 6 : 4).endFill();
+      });
+      const first = draft.points[0];
+      if (draft.points.length >= 3 && dist(this.toLocal(cur), first) < G * 0.3) {
+        g.lineStyle(2, 0xffffff, 1).drawCircle(first[0] + o.x, first[1] + o.y, 10);
+      }
+    }
+  }
+
+  async #addRoom(ring, erase) {
+    if (!this.store) return;
+    const d = this.store.data;
+    if (erase && !d.rooms?.length) return;
+    const r8 = v => Math.round(v * 8) / 8;
+    const piece = {
+      id: foundry.utils.randomID(8),
+      mode: erase ? "erase" : this.settings.room.mode,
+      ring: ring.map(p => [r8(p[0]), r8(p[1])]),
+      floor: erase ? null : (this.selection("room")[0]?.src ?? null),
+      wall: this.roomWallStyle()
+    };
+    await this.#changeRooms(erase ? "erase room" : "room", rooms => [...rooms, piece]);
+  }
+
+  async #repaintRoom(pos) {
+    const d = this.store?.data;
+    const piece = d?.rooms?.length ? pieceAt(d.rooms, this.toLocal(pos)) : null;
+    if (!piece) return;
+    const floor = this.selection("room")[0]?.src ?? null;
+    const wall = this.settings.room.repaintWalls ? this.roomWallStyle() : piece.wall;
+    await this.#changeRooms("repaint room", rooms => rooms.map(p => (p.id === piece.id ? { ...p, floor, wall } : p)));
+  }
+
+  /** Change the room pieces, regenerate their walls and floors, and record one undo step. */
+  async #changeRooms(label, change) {
+    const store = this.store;
+    if (!store) return;
+    const d = store.data;
+    const snap = { rooms: foundry.utils.deepClone(d.rooms ?? []), walls: foundry.utils.deepClone(d.walls.filter(w => w.room)) };
+    d.rooms = change(d.rooms ?? []);
+    try {
+      await this.#syncRoomWalls(store);
+    } catch (err) {
+      console.error(err);
+      ui.notifications.error(`Battlemap Editor: could not build the room walls: ${err.message}`);
+    }
+    store.touch();
+    await this.renderer?.buildVectors();
+    this.refreshVisibility();
+    this.pushUndo(label, () => this.#restoreRooms(store, snap));
+  }
+
+  async #restoreRooms(store, snap) {
+    const d = store.data;
+    const roomIds = new Set(d.walls.filter(w => w.room).map(w => w.id));
+    const ids = store.scene.walls.filter(w => roomIds.has(w.flags?.[MODULE_ID]?.wall)).map(w => w.id);
+    if (ids.length) await store.scene.deleteEmbeddedDocuments("Wall", ids);
+    const walls = foundry.utils.deepClone(snap.walls);
+    d.rooms = foundry.utils.deepClone(snap.rooms);
+    d.walls = [...d.walls.filter(w => !w.room), ...walls];
+    for (const w of walls) await syncWalls(store.scene, w, { ppi: this.catalog?.ppi });
+    store.touch();
+    if (this.store === store) await this.renderer?.buildVectors();
+  }
+
+  /**
+   * Regenerate the wall entries that come from rooms. Walls whose shape and style did not change are kept as
+   * they are (with their Foundry walls and doors); doors and windows on changed walls move to the new wall
+   * at the same spot.
+   */
+  async #syncRoomWalls(store) {
+    const d = store.data, scene = store.scene, G = store.gridSize;
+    const r8 = v => Math.round(v * 8) / 8;
+    const sig = w => JSON.stringify([w.points.map(p => [r8(p[0]), r8(p[1])]), !!w.closed, w.src ?? null, w.type, w.width]);
+    const fresh = roomWalls(d.rooms ?? []).filter(w => w.style.src || (w.style.type ?? "normal") !== "none");
+    const old = d.walls.filter(w => w.room);
+    const pool = new Map();
+    for (const w of old) {
+      const k = sig(w);
+      if (!pool.has(k)) pool.set(k, []);
+      pool.get(k).push(w);
+    }
+    const next = [], resync = new Set();
+    for (const f of fresh) {
+      const cand = {
+        src: f.style.src ?? null, type: f.style.type ?? "normal", width: f.style.width ?? 1,
+        points: f.points.map(p => [r8(p[0]), r8(p[1])]), closed: f.closed
+      };
+      const same = pool.get(sig(cand))?.shift();
+      if (same) {
+        same.room = f.piece;
+        next.push(same);
+        continue;
+      }
+      const entry = { id: foundry.utils.randomID(8), ...cand, openings: [], wallIds: [], room: f.piece };
+      next.push(entry);
+      resync.add(entry);
+    }
+    const keep = new Set(next);
+    const dropped = old.filter(w => !keep.has(w));
+
+    for (const w of dropped) {
+      for (const o of w.openings ?? []) {
+        const { a, b } = this.#openingEnds(w, o);
+        const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], len = dist(a, b);
+        let best = null;
+        for (const e of next) {
+          const pts = ringPoints(e.points, e.closed);
+          const cum = cumulative(pts);
+          const h = project(pts, cum, mid);
+          if (h.dist < G * 0.35 && (!best || h.dist < best.h.dist)) best = { e, h, total: cum[cum.length - 1] };
+        }
+        if (!best) continue;  // the wall is gone (rooms merged there): so is the door
+        const d0 = Math.max(0, best.h.d - len / 2), d1 = Math.min(best.total, best.h.d + len / 2);
+        if (best.e.openings.some(x => d0 < Math.max(x.d0, x.d1) && d1 > Math.min(x.d0, x.d1))) continue;
+        best.e.openings.push({ ...o, d0, d1 });
+        resync.add(best.e);
+      }
+    }
+
+    const dropIds = new Set(dropped.map(w => w.id));
+    const dropDocs = new Set(dropped.flatMap(w => w.wallIds ?? []));
+    const docIds = scene.walls.filter(w => dropIds.has(w.flags?.[MODULE_ID]?.wall) || dropDocs.has(w.id)).map(w => w.id);
+    if (docIds.length) await scene.deleteEmbeddedDocuments("Wall", docIds);
+    d.walls = [...d.walls.filter(w => !w.room), ...next];
+    for (const e of resync) await syncWalls(scene, e, { ppi: this.catalog?.ppi });
   }
 
   /* -------------------------------------------- */
@@ -1145,7 +1381,9 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     if (light) return { type: "light", doc: light };
     const tile = tileAt(pos);
     if (tile) return { type: "tile", doc: tile };
-    return best;
+    if (best) return best;
+    const piece = d.rooms?.length ? pieceAt(d.rooms, q) : null;
+    return piece ? { type: "room", piece } : null;
   }
 
   async deleteSelected() {
@@ -1155,6 +1393,13 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     if (sel.doc) return this.#deleteDoc(sel.doc);
     const store = this.store;
     const d = store.data;
+    const roomId = sel.type === "room" ? sel.piece.id : (sel.type === "wall" ? sel.entry.room : null);
+    if (roomId) {
+      await this.#changeRooms("delete room", rooms => rooms.filter(p => p.id !== roomId));
+      this.palette.render();
+      this.#updateCursor(canvas.mousePosition);
+      return;
+    }
     if (sel.type === "path") {
       const i = d.paths.indexOf(sel.entry);
       d.paths.splice(i, 1);
@@ -1422,7 +1667,7 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     if (!this.store) return;
     const ok = await foundry.applications.api.DialogV2.confirm({
       window: { title: "Clear battlemap", icon: "fa-solid fa-trash" },
-      content: `<p>Remove all painted terrain, paths, wall art and the Foundry walls the editor created on this scene?</p>
+      content: `<p>Remove all painted terrain, rooms, paths, wall art and the Foundry walls the editor created on this scene?</p>
         <p>Object tiles, lights and the baked background stay. This cannot be undone.</p>`,
       rejectClose: false
     });
@@ -1430,7 +1675,7 @@ export class BattlemapLayer extends foundry.canvas.layers.InteractionLayer {
     const store = this.store;
     const ids = store.scene.walls.filter(w => w.flags?.[MODULE_ID]?.wall).map(w => w.id);
     if (ids.length) await store.scene.deleteEmbeddedDocuments("Wall", ids);
-    Object.assign(store.data, { base: null, layers: [], paths: [], walls: [] });
+    Object.assign(store.data, { base: null, layers: [], paths: [], walls: [], rooms: [] });
     store.masks.clear();
     this.undoStack = [];
     await store.save();

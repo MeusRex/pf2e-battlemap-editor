@@ -18,6 +18,10 @@ const TOOL_INFO = {
     title: "Walls", icon: "fa-solid fa-block-brick",
     hint: "Click points on the grid (Shift: free). Click the first point to close a room. Creates Foundry walls along the art. With no art selected, only Foundry walls are made."
   },
+  room: {
+    title: "Rooms", icon: "fa-solid fa-vector-square",
+    hint: "Pick a floor texture, then drag a rectangle or circle, or click a polygon (Ctrl+click adds a curve point: the wall bends through it; click the first point, double-click or Enter to close). Merge opens into rooms it overlaps or touches; Separate keeps a wall between them. Alt (or Erase) cuts away. Walls use the Wall tool's art and type."
+  },
   door: {
     title: "Doors & windows", icon: "fa-solid fa-door-open",
     hint: "Hover an editor wall and click to cut a door (opens with the selected art) or a window (from Windows/). Click an existing opening to remove it."
@@ -32,7 +36,7 @@ const TOOL_INFO = {
   },
   pick: {
     title: "Select", icon: "fa-solid fa-arrow-pointer",
-    hint: "Click a path, wall, opening, tile or light (yellow dots) to select it. Drag tiles and lights to move them; paths can be mirrored and roughened; Delete removes; Ctrl+Z undoes."
+    hint: "Click a path, wall, opening, tile, light (yellow dots) or room floor to select it. Drag tiles and lights to move them; paths can be mirrored and roughened; Delete removes; Ctrl+Z undoes."
   }
 };
 
@@ -55,6 +59,13 @@ const OPTIONS = {
     ["wall.type", "Foundry walls", "select", { choices: WALL_TYPES }],
     ["wall.width", "Thickness", "range", { min: 0.25, max: 3, step: 0.05 }],
     ["wall.snap", "Snap to grid", "checkbox"]
+  ],
+  room: [
+    ["room.shape", "Shape", "select", { choices: { rect: "Rectangle (drag)", circle: "Circle (drag from centre)", poly: "Polygon / curves (click)", repaint: "Repaint room (click a room)" } }],
+    ["room.mode", "Overlap", "select", { choices: { merge: "Merge: open into other rooms", separate: "Separate: wall between rooms" } }],
+    ["room.erase", "Erase", "checkbox"],
+    ["room.repaintWalls", "Repaint also changes walls", "checkbox"],
+    ["room.snap", "Snap to grid", "checkbox"]
   ],
   door: [
     ["door.width", "Width (squares)", "range", { min: 0.5, max: 4, step: 0.5 }],
@@ -251,18 +262,30 @@ export class BattlemapPalette extends foundry.applications.api.ApplicationV2 {
             ${range("width", "Thickness", p.width ?? 1, 0.25, 4, 0.05)}
           </div>`;
       } else if (sel) {
-        const label = sel.type === "opening" ? `${sel.opening.kind} on a wall` : sel.type;
-        const art = sel.type === "opening" ? sel.opening.src : sel.entry.src;
+        const isRoom = sel.type === "room" || (sel.type === "wall" && sel.entry.room);
+        const label = sel.type === "opening" ? `${sel.opening.kind} on a wall`
+          : sel.type === "room" ? `room (${sel.piece.mode})` : (isRoom ? "room wall" : sel.type);
+        const art = sel.type === "opening" ? sel.opening.src : sel.type === "room" ? sel.piece.floor : sel.entry.src;
         selHTML = `<div class="bme-row"><strong>Selected:</strong> ${esc(label)} ${art ? `(${nameOf(art)})` : ""}
-          <button type="button" data-action-bme="delete"><i class="fa-solid fa-trash"></i> Delete</button></div>`;
+          <button type="button" data-action-bme="delete"><i class="fa-solid fa-trash"></i> ${isRoom ? "Delete room" : "Delete"}</button></div>
+          ${isRoom ? `<p class="hint">Room walls follow the room shape. Draw over it with the Room tool (Erase cuts away), or use Repaint room to change its floor.</p>` : ""}`;
       }
       return `<section class="bme-extras">${selHTML}
-        <p class="hint">This map: ${d.layers.length} painted textures, ${d.paths.length} paths, ${d.walls.length} walls,
+        <p class="hint">This map: ${d.layers.length} painted textures, ${d.rooms?.filter(r => r.mode !== "erase").length ?? 0} rooms, ${d.paths.length} paths, ${d.walls.length} walls,
         ${d.walls.reduce((n, w) => n + w.openings.length, 0)} openings.
         ${d.dirty ? "<strong>Not baked yet.</strong>" : (d.baked ? "Baked." : "")}</p>
         ${d.flattened?.length ? `<div class="bme-row"><button type="button" data-action-bme="unflatten">
           <i class="fa-solid fa-layer-group"></i> Restore ${d.flattened.length} flattened objects as tiles</button></div>` : ""}
         </section>`;
+    }
+    if (tool === "room") {
+      const st = this.layer.roomWallStyle();
+      const wallArt = st.src ? nameOf(st.src) : "no art";
+      return `<section class="bme-extras">
+        <p class="hint"><strong>Walls:</strong> ${wallArt} · ${esc(WALL_TYPES[st.type] ?? st.type)} · thickness ${st.width}
+          <em>(change in the Wall tool)</em></p>
+        <div class="bme-row"><button type="button" data-action-bme="clear-selection"><i class="fa-solid fa-ban"></i> No floor (walls only)</button></div>
+      </section>`;
     }
     if (tool === "wall" || tool === "door") {
       return `<section class="bme-extras"><div class="bme-row">
